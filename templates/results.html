@@ -1,0 +1,330 @@
+{% extends "base.html" %}
+{% block title %}Results {{ run_id }}{% endblock %}
+{% block content %}
+<section class="card">
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Run {{ run_id }}</p>
+            <h1>Results overview</h1>
+            <p class="lede">Explore the volcano plot and gene annotations. Downloads and tables are in a separate tab.</p>
+        </div>
+        <div class="pill subtle">Status: {{ run.status }}</div>
+    </div>
+    <div class="grid stats">
+        <div class="field"><p class="hint">Job name</p><p class="strong">{{ run_job_name or run.name or run.params.job_name or '—' }}</p></div>
+        <div class="field"><p class="hint">Total genes</p><p class="strong">{{ summary.total_genes | default('0') }}</p></div>
+        <div class="field"><p class="hint">Upregulated</p><p class="strong" style="color:#16a34a;">{{ summary.upregulated_count | default('0') }}</p></div>
+        <div class="field"><p class="hint">Downregulated</p><p class="strong" style="color:#dc2626;">{{ summary.downregulated_count | default('0') }}</p></div>
+        <div class="field"><p class="hint">log2FC threshold</p><p class="strong">{{ run.params.log2fc_threshold }}</p></div>
+        <div class="field"><p class="hint">p-value threshold</p><p class="strong">{{ run.params.pvalue_threshold }}</p></div>
+        <div class="field"><p class="hint">Distance percentile</p><p class="strong">{{ run.params.distance_percentile }}</p></div>
+        <div class="field"><p class="hint">Runtime</p><p class="strong">{{ run_duration or '—' }}</p></div>
+        <div class="field"><p class="hint">FDR</p><p class="strong">{{ 'On' if run.params.use_fdr else 'Off' }}</p></div>
+    </div>
+</section>
+
+<section class="card">
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Differential expression</p>
+            <h2>Volcano plot</h2>
+            <p class="hint" id="volcano-hint">Loading volcano data...</p>
+        </div>
+    </div>
+    <div id="volcano-plot" style="height:700px; width:100%;"></div>
+</section>
+
+<section class="card">
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Gene detail</p>
+            <h2 id="gene-title">Select a gene</h2>
+            <p class="lede">All annotations, networks, and structures for the selected gene.</p>
+        </div>
+    </div>
+    <div id="gene-panel" class="gene-panel">
+        <p class="hint">Click a gene in the volcano plot to view details.</p>
+    </div>
+</section>
+
+<section class="card">
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Outputs</p>
+            <h2>Downloads & tables</h2>
+            <p class="hint">Open the dedicated downloads & tables page in a new tab.</p>
+        </div>
+    </div>
+    <div class="actions">
+        <a class="btn secondary" href="/runs/{{ run_id }}/downloads" target="_blank">Open downloads & tables</a>
+        <a class="btn" href="/runs/{{ run_id }}/download-zip">Download all (zip)</a>
+    </div>
+</section>
+
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.26.0/cytoscape.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/ngl@2.0.0-dev.36/dist/ngl.js"></script>
+<script>
+    const runId = "{{ run_id }}";
+    const volcanoHint = document.getElementById('volcano-hint');
+    const geneTitle = document.getElementById('gene-title');
+    const genePanel = document.getElementById('gene-panel');
+    const log2fcThresh = {{ run.params.log2fc_threshold or 1.0 }};
+    const pvalThresh = {{ run.params.pvalue_threshold or 0.05 }};
+
+    function truncateText(text, max = 140) {
+        if (!text) return '';
+        const t = String(text);
+        return t.length > max ? `${t.slice(0, max)}…` : t;
+    }
+
+    function formatSci(val) {
+        if (val === null || val === undefined || Number.isNaN(val)) return 'N/A';
+        return Number(val).toExponential(2);
+    }
+
+    async function loadVolcano() {
+        try {
+            const res = await fetch(`/runs/${runId}/volcano`);
+            const data = await res.json();
+            const pts = data.points || [];
+            if (!pts.length) { volcanoHint.textContent = 'No data available for volcano plot.'; return; }
+
+            const split = { up: [], down: [], non: [] };
+            pts.forEach(p => {
+                const bucket = split[p.label] || split.non;
+                bucket.push(p);
+            });
+
+            const xs = pts.map(p => p.log2FC).filter(v => Number.isFinite(v));
+            const ys = pts.map(p => p.neg_log10_p).filter(v => Number.isFinite(v));
+            const minX = xs.length ? Math.min(...xs) : -2;
+            const maxX = xs.length ? Math.max(...xs) : 2;
+            const minY = ys.length ? Math.min(...ys) : 0;
+            const maxY = ys.length ? Math.max(...ys) : 5;
+            const padX = Math.max(0.5, (maxX - minX) * 0.1);
+            const padY = Math.max(0.5, (maxY - minY) * 0.1);
+
+            const mkTrace = (arr, name, color, size, hover = true) => ({
+                x: arr.map(p => p.log2FC),
+                y: arr.map(p => p.neg_log10_p),
+                mode: 'markers',
+                name,
+                marker: hover ? { color, size, opacity: 1.0, line: { color: '#fff', width: 0.6 } } : { color, size, opacity: 0.5, line: { width: 0 } },
+                customdata: hover ? arr.map(p => [p.gene_id, p.protein, p.log2FC, p.p_value, p.adj_p_value, truncateText(p.function, 140)]) : undefined,
+                hovertemplate: hover ? '<b>%{customdata[0]}</b><br>Protein: %{customdata[1]}<br>log2FC=%{customdata[2]:.2f}<br>p=%{customdata[3]:.1e}<br>FDR=%{customdata[4]:.1e}<br>Function: %{customdata[5]}<extra></extra>' : undefined,
+                hoverinfo: hover ? undefined : 'skip',
+                type: 'scattergl',
+                hoverlabel: hover ? { bgcolor: color, bordercolor: '#0b0f19', font: { size: 13, color: '#ffffff' } } : undefined,
+            });
+
+            const traces = [
+                mkTrace(split.non, 'Non-significant', '#111111', 4, false),
+                mkTrace(split.up, 'Upregulated', '#10b981', 9, true),
+                mkTrace(split.down, 'Downregulated', '#ef4444', 9, true),
+            ];
+            const layout = {
+                title: 'Volcano plot',
+                xaxis: { title: 'log2 Fold Change', range: [minX - padX, maxX + padX] },
+                yaxis: { title: '-log10(p-value)', range: [Math.max(0, minY - padY), maxY + padY] },
+                hovermode: 'closest',
+                plot_bgcolor: '#fff',
+                paper_bgcolor: '#fff',
+                hoverlabel: { align: 'left', font: { size: 13, color: '#ffffff' }, bgcolor: '#111827', bordercolor: '#e5e7eb' },
+                shapes: [
+                    { type: 'line', x0: log2fcThresh, x1: log2fcThresh, y0: 0, y1: 100, line: { color: '#9ca3af', dash: 'dash', width: 1 } },
+                    { type: 'line', x0: -log2fcThresh, x1: -log2fcThresh, y0: 0, y1: 100, line: { color: '#9ca3af', dash: 'dash', width: 1 } },
+                    { type: 'line', x0: -100, x1: 100, y0: -Math.log10(pvalThresh || 1e-6), y1: -Math.log10(pvalThresh || 1e-6), line: { color: '#9ca3af', dash: 'dash', width: 1 } },
+                ],
+            };
+
+            Plotly.newPlot('volcano-plot', traces, layout, {displaylogo: false});
+            volcanoHint.textContent = 'Click a point to view gene details.';
+
+            document.getElementById('volcano-plot').on('plotly_click', ev => {
+                if (!ev || !ev.points || !ev.points.length) return;
+                const cd = ev.points[0].customdata;
+                if (!cd) return;
+                const geneId = cd[0];
+                loadGene(geneId);
+            });
+        } catch (err) {
+            console.error(err);
+            volcanoHint.textContent = 'Failed to load volcano data.';
+        }
+    }
+
+    function renderCytoscape(edges, queryId) {
+        const cyDiv = document.getElementById('cyto');
+        if (!edges || !edges.length) {
+            cyDiv.innerHTML = '<p class="hint">No STRING interactions available.</p>';
+            return;
+        }
+        const nodes = new Map();
+        edges.forEach(e => {
+            if (e.source) nodes.set(e.source, { id: e.source, label: e.source, type: e.source === queryId ? 'query' : 'node' });
+            if (e.target) nodes.set(e.target, { id: e.target, label: e.target, type: e.target === queryId ? 'query' : 'node' });
+        });
+
+        // compute connected components for coloring
+        const adj = {};
+        edges.forEach(e => {
+            if (!adj[e.source]) adj[e.source] = [];
+            if (!adj[e.target]) adj[e.target] = [];
+            adj[e.source].push(e.target);
+            adj[e.target].push(e.source);
+        });
+        const palette = ['#22c55e', '#a855f7', '#f97316', '#0ea5e9', '#e11d48', '#14b8a6', '#eab308', '#8b5cf6'];
+        const components = {};
+        let compId = 0;
+        nodes.forEach((_, nodeId) => {
+            if (components[nodeId] !== undefined) return;
+            const color = palette[compId % palette.length];
+            const stack = [nodeId];
+            while (stack.length) {
+                const n = stack.pop();
+                if (components[n] !== undefined) continue;
+                components[n] = color;
+                (adj[n] || []).forEach(nei => stack.push(nei));
+            }
+            compId += 1;
+        });
+
+        const elements = [
+            ...[...nodes.values()].map(n => ({ data: { id: n.id, label: n.label, type: n.type, color: n.type === 'query' ? '#2563eb' : components[n.id] } })),
+            ...edges.map(e => ({ data: { id: `${e.source}-${e.target}`, source: e.source, target: e.target, score: e.combined_score } }))
+        ];
+        cyDiv.innerHTML = '';
+        const cy = cytoscape({
+            container: cyDiv,
+            elements,
+            layout: { name: 'cose', animate: false },
+            wheelSensitivity: 0.1,
+            style: [
+                { selector: 'node', style: { 'background-color': 'data(color)', 'label': 'data(label)', 'color': '#0f172a', 'font-size': '10px', 'width': 28, 'height': 28, 'text-outline-color': '#ffffff', 'text-outline-width': 2, 'border-color': '#000', 'border-width': 1 } },
+                { selector: 'node[type = "query"]', style: { 'border-color': '#000000', 'border-width': 1 } },
+                { selector: 'edge', style: { 'line-color': '#000000', 'width': 2, 'curve-style': 'bezier' } }
+            ]
+        });
+        cy.ready(() => cy.fit());
+
+        // summarize component sizes for legend
+        const counts = {};
+        Object.values(components).forEach(c => { counts[c] = (counts[c] || 0) + 1; });
+        const legend = Object.entries(counts)
+            .map(([col, n]) => `${n} node${n !== 1 ? 's' : ''}`)
+            .join(', ');
+        const legendEl = document.getElementById('cy-legend');
+        if (legendEl) {
+            legendEl.textContent = legend ? `Query node in blue (if present); components sized: ${legend}.` : 'Query node in blue (if present).';
+        }
+    }
+
+    function renderNGL(pdbText) {
+        const container = document.getElementById('ngl-viewer');
+        container.innerHTML = '';
+        if (!pdbText) { container.innerHTML = '<p class="hint">No 3D structure available.</p>'; return; }
+        const stage = new NGL.Stage(container, { backgroundColor: '#ffffff' });
+        const blob = new Blob([pdbText], { type: 'text/plain' });
+        stage.loadFile(blob, { ext: 'pdb' }).then(comp => {
+            comp.addRepresentation('cartoon', { colorScheme: 'bfactor' });
+            comp.autoView();
+        });
+    }
+
+    function renderGene(detail) {
+        geneTitle.textContent = detail.gene_id;
+        const pvalText = formatSci(detail.p_value);
+        const adjText = formatSci(detail.adj_p_value || detail.p_value);
+        const regBadge = detail.regulation === 'up' ? 'Upregulated' : 'Downregulated';
+        genePanel.innerHTML = `
+            <div class="grid">
+                <div class="field"><p class="hint">log2FC</p><p class="strong">${detail.log2FC?.toFixed(3) ?? 'N/A'}</p></div>
+                <div class="field"><p class="hint">p-value</p><p class="strong">${pvalText}</p></div>
+                <div class="field"><p class="hint">FDR</p><p class="strong">${adjText}</p></div>
+                <div class="field"><p class="hint">Status</p><p class="strong">${regBadge}</p></div>
+                <div class="field"><p class="hint">Protein</p><p class="strong">${detail.protein_name || 'Unknown'}</p></div>
+                <div class="field"><p class="hint">UniProt</p><p class="strong">${detail.uniprot_id || 'N/A'}</p></div>
+            </div>
+
+            <h3>Function</h3>
+            <p>${detail.function || 'Not available'}</p>
+
+            <h3>Gene Ontology</h3>
+            <div class="grid">
+                <div><p class="hint">Biological process</p><p>${detail.go_bp || 'N/A'}</p></div>
+                <div><p class="hint">Molecular function</p><p>${detail.go_mf || 'N/A'}</p></div>
+                <div><p class="hint">Cellular component</p><p>${detail.go_cc || 'N/A'}</p></div>
+            </div>
+
+            <h3>Domains</h3>
+            <div class="grid">
+                <div><p class="hint">InterPro</p><p>${detail.interpro_domains || 'N/A'}</p></div>
+                <div><p class="hint">Pfam</p><p>${detail.pfam_domains || 'N/A'}</p></div>
+            </div>
+
+            <h3>KEGG pathways</h3>
+            ${Array.isArray(detail.kegg) && detail.kegg.length ? `<table class="data-table"><thead><tr><th>KO</th><th>Pathway</th></tr></thead><tbody>${detail.kegg.map(k => `<tr><td>${k.KO || ''}</td><td>${k.KEGG_pathway_id || ''}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">No KEGG data.</p>'}
+
+            <h3>EggNOG GO terms</h3>
+            ${Array.isArray(detail.eggnog_go) && detail.eggnog_go.length ? `<table class="data-table"><thead><tr><th>Category</th><th>GO</th><th>Name</th></tr></thead><tbody>${detail.eggnog_go.slice(0,30).map(g => `<tr><td>${g.GO_category || ''}</td><td>${g.GO_ID || ''}</td><td>${g.GO_name || ''}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">No EggNOG GO terms.</p>'}
+
+            <h3>EggNOG domains</h3>
+            ${Array.isArray(detail.eggnog_domains) && detail.eggnog_domains.length ? `<table class="data-table"><thead><tr><th>Domain</th><th>Type</th></tr></thead><tbody>${detail.eggnog_domains.slice(0,30).map(d => `<tr><td>${d.domain_name || ''}</td><td>${d.domain_type || ''}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">No EggNOG domain data.</p>'}
+
+            <h3>InterPro annotations</h3>
+            ${Array.isArray(detail.interpro) && detail.interpro.length ? `<table class="data-table"><thead><tr><th>ID</th><th>Name</th></tr></thead><tbody>${detail.interpro.slice(0,30).map(i => `<tr><td>${i.interpro_id || ''}</td><td>${i.domain_name || ''}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">No InterPro detail.</p>'}
+
+            <h3><strong>Sequences & Structure</strong></h3>
+            <div style="width:100%; display:grid; gap:16px;">
+                <div class="field" style="width:100%;">
+                    <p class="hint"><strong>FASTA</strong></p>
+                    <pre style="max-height:240px; overflow:auto; width:100%;">${detail.fasta || 'Not available'}</pre>
+                    ${detail.fasta_path ? `<a class="link" href="${detail.fasta_path}" target="_blank">Download FASTA</a>` : ''}
+                </div>
+                <div class="field" style="width:100%; display:flex; flex-direction:column; align-items:center;">
+                    <p class="hint" style="text-align:center;"><strong>AlphaFold / PDB</strong></p>
+                    <div id="ngl-viewer" style="width:100%; height:60vh; max-height:640px; border:1px solid var(--border); border-radius:8px;"></div>
+                    ${detail.pdb_path ? `<a class="link" href="${detail.pdb_path}" target="_blank">Download PDB</a>` : ''}
+                    ${detail.uniprot_id ? `<div style="margin-top:8px;"><a class="btn secondary" href="https://alphafold.ebi.ac.uk/search/text/${encodeURIComponent((detail.uniprot_id || '').toUpperCase())}" target="_blank" rel="noreferrer">View on AlphaFold</a></div>` : ''}
+                    <div class="hint" style="margin-top:8px; text-align:center;">Confidence: ${detail.alphafold_confidence || 'N/A'} | Version: ${detail.alphafold_version || 'N/A'}</div>
+                </div>
+            </div>
+
+            <h3>STRING network</h3>
+            <div class="string-grid">
+                ${detail.string_svg_url ? `<div class="string-panel"><img src="${detail.string_svg_url}" class="string-img"/></div>` : '<p class="hint">No STRING SVG available.</p>'}
+                <div id="cyto" class="string-panel" style="border:1px solid var(--border); border-radius:8px;"></div>
+            </div>
+            <p id="cy-legend" class="hint" style="margin-top:6px;">Query node in blue (if present in network); other nodes grouped by connected component color.</p>
+            ${Array.isArray(detail.string_edges) && detail.string_edges.length ? `
+                <h4>Interaction scores</h4>
+                <table class="data-table"><thead><tr><th>Source</th><th>Target</th><th>Score</th></tr></thead><tbody>
+                ${detail.string_edges.slice(0,50).map(e => `<tr><td>${e.source || ''}</td><td>${e.target || ''}</td><td>${e.combined_score?.toFixed ? e.combined_score.toFixed(3) : (e.combined_score || '')}</td></tr>`).join('')}
+                </tbody></table>
+            ` : '<p class="hint">No interaction scores available.</p>'}
+            ${detail.string_edges_path ? `<a class="link" href="${detail.string_edges_path}" target="_blank">Download full interaction table</a>` : ''}
+        `;
+
+        const queryId = detail.uniprot_id || detail.gene_id;
+        renderCytoscape(detail.string_edges, queryId);
+        renderNGL(detail.pdb);
+        genePanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    async function loadGene(geneId) {
+        genePanel.innerHTML = '<p class="hint">Loading gene details...</p>';
+        try {
+            const res = await fetch(`/runs/${runId}/gene/${geneId}`);
+            if (!res.ok) throw new Error('Gene not found');
+            const detail = await res.json();
+            renderGene(detail);
+        } catch (err) {
+            console.error(err);
+            genePanel.innerHTML = '<p class="hint">Failed to load gene details.</p>';
+        }
+    }
+
+    loadVolcano();
+</script>
+{% endblock %}

@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Run {{ run.id }}{% endblock %}
+{% block content %}
+<section class="card">
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Run {{ run.id }}</p>
+            <h1>Status: <span id="status-text" class="status {{ run.status }}">{{ run.status }}</span></h1>
+            <p class="lede">Processing mirrors the terminal output from the underlying pipeline. This page refreshes automatically.</p>
+        </div>
+        <div class="pill subtle">Live</div>
+    </div>
+    <div class="grid">
+        <div class="field">
+            <p class="hint">Job name</p>
+            <p class="strong">{{ run.name or run.params.job_name or '—' }}</p>
+        </div>
+        <div class="field">
+            <p class="hint">Created</p>
+            <p class="strong">{{ run.created_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</p>
+        </div>
+        <div class="field">
+            <p class="hint">log2FC threshold</p>
+            <p class="strong">{{ run.params.log2fc_threshold }}</p>
+        </div>
+        <div class="field">
+            <p class="hint">p-value threshold</p>
+            <p class="strong">{{ run.params.pvalue_threshold }}</p>
+        </div>
+        <div class="field">
+            <p class="hint">Distance percentile</p>
+            <p class="strong">{{ run.params.distance_percentile }}</p>
+        </div>
+        <div class="field">
+            <p class="hint">FDR</p>
+            <p class="strong">{{ 'On' if run.params.use_fdr else 'Off' }}</p>
+        </div>
+    </div>
+
+    <div class="log-container" id="log-box">
+        <pre id="log-text">Loading log...</pre>
+    </div>
+    <div class="actions">
+        {% if run.status in ["queued", "running"] %}
+        <button id="stop-btn" class="btn secondary" type="button">Stop run</button>
+        {% endif %}
+        <a id="results-link" class="btn secondary" href="/runs/{{ run.id }}/results" style="display: none;">View results</a>
+        <a class="link" href="/runs/{{ run.id }}/logs" target="_blank">Open full log</a>
+    </div>
+</section>
+
+<script>
+    const runId = "{{ run.id }}";
+    const logBox = document.getElementById("log-text");
+    const statusText = document.getElementById("status-text");
+    const resultsLink = document.getElementById("results-link");
+    const stopBtn = document.getElementById("stop-btn");
+
+    async function poll() {
+        try {
+            const res = await fetch(`/runs/${runId}/status`);
+            if (!res.ok) return;
+            const data = await res.json();
+            statusText.textContent = data.status;
+            statusText.className = `status ${data.status}`;
+            if (Array.isArray(data.logs)) {
+                logBox.textContent = data.logs.join("\n") || "Waiting for output...";
+            }
+            if (data.status === "completed") {
+                window.location.assign(`/runs/${runId}/results`);
+                return;
+            }
+            if (data.status === "failed") {
+                resultsLink.style.display = "none";
+                return;
+            }
+        } catch (err) {
+            console.error(err);
+        }
+        setTimeout(poll, 2000);
+    }
+
+    if (stopBtn) {
+        stopBtn.addEventListener('click', async () => {
+            if (!confirm(`Stop run ${runId}?`)) return;
+            stopBtn.disabled = true;
+            stopBtn.textContent = 'Stopping...';
+            try {
+                const res = await fetch(`/runs/${runId}/stop`, { method: 'POST' });
+                if (!res.ok) throw new Error('Stop failed');
+                statusText.textContent = 'stopped';
+                statusText.className = 'status stopped';
+            } catch (err) {
+                console.error(err);
+                stopBtn.disabled = false;
+                stopBtn.textContent = 'Stop run';
+                alert('Failed to stop run.');
+            }
+        });
+    }
+
+    poll();
+</script>
+{% endblock %}

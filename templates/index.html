@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+{% block title %}Transcriptomics Pipeline{% endblock %}
+{% block content %}
+<section class="card">
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Differential expression</p>
+            <h1>Run a new analysis</h1>
+            <p class="lede">Upload your expression table, map the required columns, set thresholds, and run the full pipeline.</p>
+        </div>
+    </div>
+    <form class="grid" action="/run" method="post" enctype="multipart/form-data">
+        <div class="field span-2">
+            <label for="data_file">Expression file (CSV)</label>
+            <input id="data_file" name="data_file" type="file" accept=".csv" required />
+            <p class="hint">Include at least gene ID, log2FC, and p-value columns.</p>
+        </div>
+
+        <div class="field span-2">
+            <label for="job_name">Job name (optional)</label>
+            <input id="job_name" name="job_name" type="text" maxlength="120" placeholder="e.g. Condition A vs B" />
+            <p class="hint">Shown in history and run pages; defaults to the run ID if blank.</p>
+        </div>
+
+        <div class="field">
+            <label for="gene_col">Gene ID column</label>
+            <select id="gene_col" name="gene_col" required>
+                <option value="" disabled selected>Select after upload</option>
+            </select>
+        </div>
+        <div class="field">
+            <label for="log2fc_col">log2FC column</label>
+            <select id="log2fc_col" name="log2fc_col" required>
+                <option value="" disabled selected>Select after upload</option>
+            </select>
+        </div>
+        <div class="field">
+            <label for="pval_col">p-value column</label>
+            <select id="pval_col" name="pval_col" required>
+                <option value="" disabled selected>Select after upload</option>
+            </select>
+        </div>
+
+        <div class="field">
+            <label for="log2fc_threshold">log2FC threshold</label>
+            <input id="log2fc_threshold" name="log2fc_threshold" type="number" step="0.01" value="1.0" />
+        </div>
+        <div class="field">
+            <label for="pvalue_threshold">p-value threshold</label>
+            <input id="pvalue_threshold" name="pvalue_threshold" type="number" step="0.0001" value="0.05" />
+        </div>
+        <div class="field">
+            <label for="distance_percentile">Distance percentile</label>
+            <input id="distance_percentile" name="distance_percentile" type="number" step="1" value="95" />
+        </div>
+        <div class="field">
+            <label class="checkbox">
+                <input id="use_fdr" name="use_fdr" type="checkbox" />
+                <span>Use FDR-adjusted p-values</span>
+            </label>
+            <p class="hint">Enables Benjamini–Hochberg correction inside the pipeline.</p>
+        </div>
+
+        <div class="actions span-2">
+            <button type="submit" class="btn primary">Run analysis</button>
+            <p class="hint">The run will execute in the background. Live logs will mirror the terminal output for each gene.</p>
+        </div>
+    </form>
+</section>
+
+<section class="card">
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Recent runs</p>
+            <h2>History</h2>
+        </div>
+    </div>
+    {% if runs %}
+    <div class="table">
+        <div class="table-row table-head">
+            <div>ID</div>
+            <div>Name</div>
+            <div>Status</div>
+            <div>Created (local)</div>
+            <div>Actions</div>
+        </div>
+        {% for r in runs %}
+        <div class="table-row">
+            <div>{{ r.id }}</div>
+            <div>{{ r.name or r.params.job_name or '—' }}</div>
+            <div class="status {{ r.status }}">{{ r.status }}</div>
+            <div class="created-at" data-utc="{{ r.created_at.strftime('%Y-%m-%dT%H:%M:%SZ') }}">{{ r.created_at.strftime('%Y-%m-%d %H:%M') }} UTC</div>
+            <div class="row-actions">
+                <a href="/runs/{{ r.id }}" class="link">View</a>
+                {% if r.status == "completed" %}
+                <a href="/runs/{{ r.id }}/results" class="link">Results</a>
+                {% endif %}
+                {% if r.status in ["queued", "running"] %}
+                <button type="button" class="link danger stop-run" data-run-id="{{ r.id }}">Stop</button>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="hint">No runs yet. Start one above.</p>
+    {% endif %}
+</section>
+
+<section class="card">
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Resume</p>
+            <h2>Open previous analysis</h2>
+            <p class="lede">Paste a run code to jump straight to its results.</p>
+        </div>
+    </div>
+    <form class="actions" action="/runs/open" method="get">
+        <input type="text" name="run_id" placeholder="Run code (e.g. 3f8a2c1d)" required style="flex:1; min-width:240px; padding:12px; border:1px solid var(--border); border-radius:10px;">
+        <button class="btn secondary" type="submit">Open results</button>
+    </form>
+</section>
+
+<script>
+    const fileInput = document.getElementById('data_file');
+    const selects = {
+        gene: document.getElementById('gene_col'),
+        log2fc: document.getElementById('log2fc_col'),
+        pval: document.getElementById('pval_col')
+    };
+
+    function clearOptions(sel) {
+        sel.innerHTML = '<option value="" disabled selected>Select after upload</option>';
+    }
+
+    function populateColumns(cols) {
+        const defaults = { gene: ['gene_id', 'Gene', 'GeneID'], log2fc: ['log2FC', 'logFC'], pval: ['p_value', 'pvalue', 'pval'] };
+        [selects.gene, selects.log2fc, selects.pval].forEach(clearOptions);
+        cols.forEach(col => {
+            Object.values(selects).forEach(sel => {
+                const opt = document.createElement('option');
+                opt.value = col;
+                opt.textContent = col;
+                sel.appendChild(opt);
+            });
+        });
+
+        const pickDefault = (sel, prefs) => {
+            for (const pref of prefs) {
+                const opt = [...sel.options].find(o => o.value.toLowerCase() === pref.toLowerCase());
+                if (opt) { sel.value = opt.value; return; }
+            }
+        };
+
+        pickDefault(selects.gene, defaults.gene);
+        pickDefault(selects.log2fc, defaults.log2fc);
+        pickDefault(selects.pval, defaults.pval);
+    }
+
+    fileInput.addEventListener('change', e => {
+        const file = e.target.files?.[0];
+        if (!file) { Object.values(selects).forEach(clearOptions); return; }
+
+        const reader = new FileReader();
+        reader.onload = ev => {
+            try {
+                const text = ev.target.result;
+                const firstLine = String(text).split(/\r?\n/)[0];
+                const cols = firstLine.split(',').map(c => c.trim()).filter(Boolean);
+                if (cols.length) populateColumns(cols);
+            } catch (err) {
+                console.error('Header parse failed', err);
+                Object.values(selects).forEach(clearOptions);
+            }
+        };
+        reader.readAsText(file.slice(0, 2000));
+    });
+
+    // convert UTC timestamps in history to local machine time
+    document.querySelectorAll('.created-at').forEach(el => {
+        const utc = el.getAttribute('data-utc');
+        if (!utc) return;
+        const date = new Date(utc);
+        if (Number.isNaN(date.getTime())) return;
+        const opts = { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }; // keep simple 24h format
+        el.textContent = date.toLocaleString(undefined, opts);
+        el.title = `UTC: ${utc}`;
+    });
+
+    // stop buttons
+    document.querySelectorAll('.stop-run').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const runId = btn.getAttribute('data-run-id');
+            if (!runId) return;
+            if (!confirm(`Stop run ${runId}?`)) return;
+            btn.disabled = true;
+            btn.textContent = 'Stopping...';
+            try {
+                const res = await fetch(`/runs/${runId}/stop`, { method: 'POST' });
+                if (!res.ok) throw new Error('Request failed');
+                location.reload();
+            } catch (err) {
+                console.error(err);
+                btn.disabled = false;
+                btn.textContent = 'Stop';
+                alert('Failed to stop run.');
+            }
+        });
+    });
+</script>
+{% endblock %}

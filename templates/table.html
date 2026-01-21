@@ -1,0 +1,22 @@
+{% if table and table.cols %}
+<table class="data-table">
+    <thead>
+        <tr>
+            {% for col in table.cols %}
+            <th>{{ col }}</th>
+            {% endfor %}
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in table.rows %}
+        <tr class="table-row">
+            {% for col in table.cols %}
+            <td>{{ row[col] }}</td>
+            {% endfor %}
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="hint">No data available.</p>
+{% endif %}

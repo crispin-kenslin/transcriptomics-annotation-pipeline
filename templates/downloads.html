@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Downloads {{ run.id }}{% endblock %}
+{% block content %}
+<section class="card">
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Run {{ run.id }}</p>
+            <h1>Downloads & tables</h1>
+            <p class="lede">All CSV artifacts and quick previews.</p>
+        </div>
+    </div>
+    <div class="actions">
+        <a class="btn" href="/runs/{{ run.id }}/download-zip">Download all (zip)</a>
+    </div>
+    <div class="list">
+        {% for f in downloads %}
+        <div class="list-row">
+            <div>{{ f.label }}</div>
+            <div><a class="link" href="{{ f.path }}" download>Download</a></div>
+        </div>
+        {% endfor %}
+        {% if networks %}
+            {% for net in networks %}
+            <div class="list-row">
+                <div>{{ net.label }}</div>
+                <div class="row-actions">
+                    <a class="link" href="{{ net.view_url }}" target="_blank">View</a>
+                    <a class="link" href="{{ net.download_url }}" download>Download</a>
+                </div>
+            </div>
+            {% endfor %}
+        {% endif %}
+        {% if not downloads and not networks %}
+        <p class="hint">No artifacts found.</p>
+        {% endif %}
+    </div>
+</section>
+
+<section class="card">
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Data preview</p>
+            <h2>Summary (top terms)</h2>
+        </div>
+    </div>
+    <div class="table-block">
+        <h3>Top GO terms (EggNOG)</h3>
+        {% if go_summary %}
+        <table class="data-table">
+            <thead><tr><th>GO ID</th><th>Name</th><th>Category</th><th>Count</th></tr></thead>
+            <tbody>
+                {% for row in go_summary %}
+                <tr>
+                    <td>{{ row.key }}</td>
+                    <td>{{ row.name or '' }}</td>
+                    <td>{{ row.category or '' }}</td>
+                    <td>{{ row.count }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="hint">No GO terms available.</p>
+        {% endif %}
+    </div>
+
+    <div class="table-block">
+        <h3>Top domains (InterPro)</h3>
+        {% if interpro_summary %}
+        <table class="data-table">
+            <thead><tr><th>Domain</th><th>Type</th><th>Count</th></tr></thead>
+            <tbody>
+                {% for row in interpro_summary %}
+                <tr>
+                    <td>{{ row.key }}</td>
+                    <td>{{ row.name or '' }}</td>
+                    <td>{{ row.count }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="hint">No InterPro domain data.</p>
+        {% endif %}
+    </div>
+
+    <div class="table-block">
+        <h3>Top domains (EggNOG)</h3>
+        {% if eggnog_dom_summary %}
+        <table class="data-table">
+            <thead><tr><th>Domain</th><th>Type</th><th>Count</th></tr></thead>
+            <tbody>
+                {% for row in eggnog_dom_summary %}
+                <tr>
+                    <td>{{ row.key }}</td>
+                    <td>{{ row.name or '' }}</td>
+                    <td>{{ row.count }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="hint">No EggNOG domain data.</p>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+pandas
+numpy
+requests
+plotly
+dash
+dash-bootstrap-components
+dash-cytoscape
+networkx
+python-louvain
+statsmodels
+python-multipart
+jinja2
