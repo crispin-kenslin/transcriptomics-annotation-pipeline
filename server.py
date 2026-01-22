@@ -6,6 +6,7 @@ import tempfile
 import shutil
 import subprocess
 import re
+import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +14,7 @@ from threading import Lock, Thread
 import signal
 
 import pandas as pd
+import requests
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,6 +24,8 @@ import numpy as np
 ROOT_DIR = Path(__file__).parent
 RUNS_DIR = ROOT_DIR / "runs"
 RUNS_DIR.mkdir(exist_ok=True)
+PHOBIUS_BASE = "https://www.ebi.ac.uk/Tools/services/rest/phobius"
+PHOBIUS_EMAIL = os.getenv("PHOBIUS_EMAIL", "admin@tapipe.res.in")
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 app = FastAPI(title="Transcriptomics Pipeline Web Server", version="1.0.0")
@@ -372,6 +376,11 @@ async def home(request: Request):
         "index.html",
         {"request": request, "runs": runs},
     )
+
+
+@app.get("/help", response_class=HTMLResponse)
+async def help_page(request: Request):
+    return TEMPLATES.TemplateResponse("help.html", {"request": request})
 
 
 @app.post("/run")
@@ -739,6 +748,87 @@ def _sf(val):
         return None
 
 
+def _run_esm_fold(seq: str, out_path: Path, timeout: int = 120):
+    return None
+
+
+def _clean_sequence(seq: str):
+    return re.sub(r"[^A-Za-z]", "", seq or "").upper()
+
+
+def _phobius_submit(fasta_str: str):
+    resp = requests.post(
+        f"{PHOBIUS_BASE}/run",
+        data={"sequence": fasta_str, "email": PHOBIUS_EMAIL},
+        headers={"User-Agent": "tapipe-phobius-client"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.text.strip()
+
+
+def _phobius_poll(job_id: str, timeout: int = 240, interval: float = 2.0):
+    status_url = f"{PHOBIUS_BASE}/status/{job_id}"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        r = requests.get(status_url, timeout=20)
+        r.raise_for_status()
+        status = (r.text or "").strip().upper()
+        if status == "FINISHED":
+            return True
+        if status == "ERROR":
+            raise RuntimeError("Phobius job failed")
+        if status in {"PENDING", "RUNNING", "QUEUED", "WAITING"}:
+            time.sleep(interval)
+            continue
+        time.sleep(interval)
+    raise TimeoutError("Phobius job timed out")
+
+
+def _phobius_download(job_id: str, gene_dir: Path, gene_id: str):
+    gene_dir.mkdir(parents=True, exist_ok=True)
+    txt_path = gene_dir / f"tmhmm_{gene_id}.txt"
+    png_path = gene_dir / f"tmhmm_{gene_id}.png"
+
+    text_url = f"{PHOBIUS_BASE}/result/{job_id}/out"
+    png_url = f"{PHOBIUS_BASE}/result/{job_id}/visual-png"
+
+    r_txt = requests.get(text_url, headers={"User-Agent": "tapipe-phobius-client"}, timeout=60)
+    r_txt.raise_for_status()
+    txt_path.write_bytes(r_txt.content)
+
+    r_png = requests.get(png_url, headers={"User-Agent": "tapipe-phobius-client"}, timeout=60)
+    if r_png.status_code == 200 and r_png.content:
+        png_path.write_bytes(r_png.content)
+    else:
+        png_path = None
+
+    try:
+        txt_content = txt_path.read_text(errors="ignore")
+    except Exception:
+        txt_content = ""
+    return txt_content, txt_path, png_path
+
+
+def _run_phobius(seq: str, gene_dir: Path, gene_id: str, force: bool = False):
+    gene_dir.mkdir(parents=True, exist_ok=True)
+    txt_path = gene_dir / f"tmhmm_{gene_id}.txt"
+    png_path = gene_dir / f"tmhmm_{gene_id}.png"
+
+    if not force and txt_path.exists() and png_path.exists():
+        try:
+            cached_text = txt_path.read_text(errors="ignore")
+        except Exception:
+            cached_text = ""
+        return {"text": cached_text, "text_path": txt_path, "png_path": png_path, "cached": True}
+
+    fasta_payload = f">{gene_id}\n{seq}\n"
+    job_id = _phobius_submit(fasta_payload)
+    _phobius_poll(job_id, timeout=240)
+    text, txt_path, png_path = _phobius_download(job_id, gene_dir, gene_id)
+    return {"text": text, "text_path": txt_path, "png_path": png_path, "job_id": job_id, "cached": False}
+
+
 def _clean_json(obj):
     """Recursively replace NaN/Inf with None so json.dumps succeeds."""
     if isinstance(obj, dict):
@@ -768,6 +858,17 @@ async def volcano_data(run_id: str):
         raise HTTPException(status_code=400, detail="Run not completed")
 
     output_dir = info["output_dir"]
+
+    def _clean_str(val):
+        try:
+            if val is None:
+                return ""
+            if isinstance(val, float) and (np.isnan(val) or np.isinf(val)):
+                return ""
+            return str(val).strip()
+        except Exception:
+            return ""
+
     processed = _safe_read_csv(output_dir / "cache" / "processed_data.csv")
     up_df = _safe_read_csv(output_dir / "upregulated_genes.csv")
     down_df = _safe_read_csv(output_dir / "downregulated_genes.csv")
@@ -775,6 +876,60 @@ async def volcano_data(run_id: str):
     ann_map = {}
     if not ann_df.empty and "gene_id" in ann_df.columns:
         ann_map = ann_df.set_index("gene_id").to_dict(orient="index")
+
+    # Preload pathway/domain/GO mappings for richer search index
+    kegg_df = _safe_read_csv(output_dir / "kegg_pathways.csv")
+    kegg_map = {}
+    if not kegg_df.empty and "gene_id" in kegg_df.columns:
+        for gid, sub in kegg_df.groupby("gene_id"):
+            entries = []
+            for _, r in sub.iterrows():
+                ko = _clean_str(r.get("KO"))
+                pathway = _clean_str(r.get("KEGG_pathway_id")) or _clean_str(r.get("KEGG_pathway_name"))
+                parts = [p for p in [ko, pathway] if p]
+                if parts:
+                    entries.append(" | ".join(parts))
+            kegg_map[str(gid)] = "; ".join(sorted(set(entries)))
+
+    eggnog_go_df = _safe_read_csv(output_dir / "eggnog_go_terms.csv")
+    eggnog_go_map = {}
+    if not eggnog_go_df.empty and "gene_id" in eggnog_go_df.columns:
+        for gid, sub in eggnog_go_df.groupby("gene_id"):
+            entries = []
+            for _, r in sub.iterrows():
+                cat = _clean_str(r.get("GO_category"))
+                go_id = _clean_str(r.get("GO_ID"))
+                name = _clean_str(r.get("GO_name"))
+                entry = " ".join([p for p in [cat, go_id, name] if p]).strip()
+                if entry:
+                    entries.append(entry)
+            eggnog_go_map[str(gid)] = "; ".join(sorted(set(entries)))
+
+    eggnog_dom_df = _safe_read_csv(output_dir / "eggnog_domains.csv")
+    eggnog_dom_map = {}
+    if not eggnog_dom_df.empty and "gene_id" in eggnog_dom_df.columns:
+        for gid, sub in eggnog_dom_df.groupby("gene_id"):
+            entries = []
+            for _, r in sub.iterrows():
+                name = _clean_str(r.get("domain_name"))
+                dtype = _clean_str(r.get("domain_type"))
+                entry = " ".join([p for p in [name, dtype] if p]).strip()
+                if entry:
+                    entries.append(entry)
+            eggnog_dom_map[str(gid)] = "; ".join(sorted(set(entries)))
+
+    interpro_df = _safe_read_csv(output_dir / "interpro_domains.csv")
+    interpro_map = {}
+    if not interpro_df.empty and "gene_id" in interpro_df.columns:
+        for gid, sub in interpro_df.groupby("gene_id"):
+            entries = []
+            for _, r in sub.iterrows():
+                iid = _clean_str(r.get("interpro_id"))
+                name = _clean_str(r.get("domain_name"))
+                entry = " ".join([p for p in [iid, name] if p]).strip()
+                if entry:
+                    entries.append(entry)
+            interpro_map[str(gid)] = "; ".join(sorted(set(entries)))
 
     if processed.empty:
         return {"points": []}
@@ -798,8 +953,22 @@ async def volcano_data(run_id: str):
             label = "down"
 
         ann = ann_map.get(gene_id, {})
-        protein = ann.get("protein_name", "Unknown") if isinstance(ann, dict) else "Unknown"
-        func = ann.get("function", "Unknown") if isinstance(ann, dict) else "Unknown"
+        protein = _clean_str(ann.get("protein_name", "Unknown")) if isinstance(ann, dict) else "Unknown"
+        func = _clean_str(ann.get("function", "Unknown")) if isinstance(ann, dict) else "Unknown"
+        go_bp = _clean_str(ann.get("GO_biological_process", "")) if isinstance(ann, dict) else ""
+        go_mf = _clean_str(ann.get("GO_molecular_function", "")) if isinstance(ann, dict) else ""
+        go_cc = _clean_str(ann.get("GO_cellular_component", "")) if isinstance(ann, dict) else ""
+        pfam = _clean_str(ann.get("Pfam_domains", "")) if isinstance(ann, dict) else ""
+        interpro_dom = _clean_str(ann.get("InterPro_domains", "")) if isinstance(ann, dict) else ""
+        cath = _clean_str(ann.get("CATH_domains", "")) if isinstance(ann, dict) else ""
+        orthologs = _clean_str(ann.get("orthologous_groups", "")) if isinstance(ann, dict) else ""
+        domains = []
+        if isinstance(ann, dict):
+            for key in ["InterPro_domains", "Pfam_domains", "CATH_domains"]:
+                val = ann.get(key)
+                if isinstance(val, str) and val:
+                    domains.append(val)
+        domain_text = " | ".join(domains)
 
         points.append({
             "gene_id": gene_id,
@@ -810,6 +979,18 @@ async def volcano_data(run_id: str):
             "label": label,
             "protein": protein or "Unknown",
             "function": func or "Unknown",
+            "domains": domain_text,
+            "go_bp": go_bp,
+            "go_mf": go_mf,
+            "go_cc": go_cc,
+            "pfam_domains": pfam,
+            "interpro_domains": interpro_dom,
+            "cath_domains": cath,
+            "orthologs": orthologs,
+            "kegg_text": kegg_map.get(gene_id, ""),
+            "eggnog_go_text": eggnog_go_map.get(gene_id, ""),
+            "eggnog_domain_text": eggnog_dom_map.get(gene_id, ""),
+            "interpro_text": interpro_map.get(gene_id, ""),
         })
 
     return {"points": points}
@@ -844,6 +1025,14 @@ async def gene_detail(run_id: str, gene_id: str):
             fasta = fasta_path.read_text()
         except Exception:
             fasta = ""
+    plain_sequence = ""
+    if fasta:
+        try:
+            plain_sequence = "".join([
+                ln.strip() for ln in fasta.splitlines() if ln.strip() and not ln.startswith(">")
+            ])
+        except Exception:
+            plain_sequence = ""
 
     pdb_text = ""
     pdb_path = gene_dir / f"structure_{gene_id}.pdb"
@@ -890,6 +1079,59 @@ async def gene_detail(run_id: str, gene_id: str):
     if not interpro_df.empty:
         interpro = interpro_df[interpro_df.get("gene_id") == gene_id].to_dict(orient="records")
 
+    secondary_structure = row.get("secondary_structure", "") if isinstance(row, pd.Series) else ""
+    psipred_states = row.get("psipred_states", secondary_structure) if isinstance(row, pd.Series) else ""
+    psipred_conf = []
+    sec_conf = row.get("psipred_confidence") if isinstance(row, pd.Series) else None
+    if isinstance(sec_conf, str) and sec_conf:
+        try:
+            psipred_conf = json.loads(sec_conf)
+        except Exception:
+            psipred_conf = []
+
+    tmhmm_segments = []
+    tmhmm_topology = row.get("tmhmm_topology", "") if isinstance(row, pd.Series) else ""
+    tmhmm_field = row.get("tmhmm_segments") if isinstance(row, pd.Series) else None
+    if isinstance(tmhmm_field, str) and tmhmm_field:
+        try:
+            tmhmm_segments = json.loads(tmhmm_field)
+        except Exception:
+            tmhmm_segments = []
+    tmhmm_png_path = gene_dir / f"tmhmm_{gene_id}.png"
+    tmhmm_png_url = (
+        f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/tmhmm_{gene_id}.png"
+        if tmhmm_png_path.exists()
+        else None
+    )
+    tmhmm_txt_path = gene_dir / f"tmhmm_{gene_id}.txt"
+    tmhmm_txt_content = ""
+    tmhmm_txt_url = None
+    if tmhmm_txt_path.exists():
+        try:
+            tmhmm_txt_content = tmhmm_txt_path.read_text(errors="ignore")
+        except Exception:
+            tmhmm_txt_content = ""
+        tmhmm_txt_url = f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/tmhmm_{gene_id}.txt"
+
+    tmhmm_flag = False
+    raw_tmhmm_flag = row.get("tmhmm_is_transporter") if isinstance(row, pd.Series) else False
+    if isinstance(raw_tmhmm_flag, str):
+        tmhmm_flag = raw_tmhmm_flag.strip().lower() in {"1", "true", "yes", "y", "on"}
+    else:
+        tmhmm_flag = bool(raw_tmhmm_flag)
+
+    orthologs = []
+    orth_field = row.get("orthologous_groups") if isinstance(row, pd.Series) else ""
+    if isinstance(orth_field, str) and orth_field:
+        orthologs = [o for o in orth_field.split(";") if o]
+
+    rapid_fold_path = gene_dir / f"fold_rapid_{gene_id}.pdb"
+    rapid_fold_url = (
+        f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/fold_rapid_{gene_id}.pdb"
+        if rapid_fold_path.exists()
+        else None
+    )
+
     detail = {
         "gene_id": gene_id,
         "log2FC": _sf(log2fc),
@@ -907,7 +1149,11 @@ async def gene_detail(run_id: str, gene_id: str):
         "cath_domains": row.get("CATH_domains", ""),
         "alphafold_confidence": row.get("alphafold_confidence", "N/A"),
         "alphafold_version": row.get("alphafold_version", "Unknown"),
+        "secondary_structure": secondary_structure,
+        "psipred_states": psipred_states,
+        "psipred_confidence": psipred_conf,
         "fasta": fasta,
+        "plain_sequence": plain_sequence,
         "pdb": pdb_text,
         "string_svg_url": svg_url,
         "string_edges": edges,
@@ -915,11 +1161,111 @@ async def gene_detail(run_id: str, gene_id: str):
         "eggnog_go": eggnog_go,
         "eggnog_domains": eggnog_domains,
         "interpro": interpro,
+        "orthologs": orthologs,
+        "rapid_fold_model": row.get("rapid_fold_model", ""),
+        "rapid_fold_pdb": rapid_fold_url,
+        "tmhmm_segments": tmhmm_segments,
+        "tmhmm_topology": tmhmm_topology,
+        "tmhmm_plot": tmhmm_png_url,
+        "tmhmm_is_transporter": tmhmm_flag,
+        "tmhmm_text": tmhmm_txt_content,
+        "tmhmm_text_url": tmhmm_txt_url,
+        "place_location": row.get("place_location", ""),
         "string_edges_path": f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/string_edges_{gene_id}.csv" if edges_path.exists() else None,
         "pdb_path": f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/structure_{gene_id}.pdb" if pdb_path.exists() else None,
         "fasta_path": f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/protein_{gene_id}.fasta" if fasta_path.exists() else None,
     }
     return _clean_json(detail)
+
+
+@app.post("/runs/{run_id}/gene/{gene_id}/phobius", response_class=JSONResponse)
+async def gene_phobius(run_id: str, gene_id: str, force: bool = False):
+    info = manager.get(run_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if info["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Run not completed")
+
+    output_dir = info["output_dir"]
+    ann_df = _safe_read_csv(output_dir / "annotations.csv")
+    if ann_df.empty or "gene_id" not in ann_df.columns:
+        raise HTTPException(status_code=404, detail="No annotation data")
+
+    row = ann_df.loc[ann_df["gene_id"] == gene_id]
+    if row.empty:
+        raise HTTPException(status_code=404, detail="Gene not found")
+    row = row.iloc[0]
+
+    log2fc = row.get("log2FC", 0)
+    regulation = "up" if pd.notna(log2fc) and log2fc > 0 else "down"
+    gene_dir = output_dir / "genes" / ("upregulated" if regulation == "up" else "downregulated") / gene_id
+
+    fasta_path = gene_dir / f"protein_{gene_id}.fasta"
+    if not fasta_path.exists():
+        raise HTTPException(status_code=404, detail="FASTA not found for gene")
+    try:
+        fasta_text = fasta_path.read_text()
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to read FASTA")
+
+    seq = _clean_sequence(fasta_text)
+    if not seq or len(seq) < 20:
+        raise HTTPException(status_code=400, detail="Sequence too short or invalid for Phobius")
+
+    try:
+        result = _run_phobius(seq, gene_dir, gene_id, force=force)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Phobius call failed: {exc}")
+
+    txt_path = result.get("text_path")
+    png_path = result.get("png_path")
+    txt_url = None
+    png_url = None
+    if txt_path and txt_path.exists():
+        txt_url = f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/{txt_path.name}"
+    if png_path and png_path.exists():
+        png_url = f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/{png_path.name}"
+
+    return {
+        "status": "ok",
+        "cached": result.get("cached", False),
+        "job_id": result.get("job_id"),
+        "text": result.get("text", ""),
+        "text_url": txt_url,
+        "png_url": png_url,
+    }
+
+
+@app.post("/runs/{run_id}/gene/{gene_id}/fold", response_class=JSONResponse)
+async def gene_fold(run_id: str, gene_id: str):
+    info = manager.get(run_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if info["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Run not completed")
+
+    gene_dir = info["output_dir"] / "genes"
+    fasta_path = gene_dir / "upregulated" / gene_id / f"protein_{gene_id}.fasta"
+    if not fasta_path.exists():
+        fasta_path = gene_dir / "downregulated" / gene_id / f"protein_{gene_id}.fasta"
+    if not fasta_path.exists():
+        raise HTTPException(status_code=404, detail="FASTA not found for gene")
+
+    try:
+        lines = fasta_path.read_text().splitlines()
+        seq = "".join([ln.strip() for ln in lines if ln and not ln.startswith(">")])
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unable to read sequence")
+
+    out_path = fasta_path.parent / f"fold_rapid_{gene_id}.pdb"
+    if out_path.exists():
+        return {"status": "ok", "pdb_url": f"/runs/{run_id}/files/genes/{'upregulated' if 'upregulated' in str(out_path) else 'downregulated'}/{gene_id}/fold_rapid_{gene_id}.pdb"}
+
+    pdb_file = _run_esm_fold(seq, out_path)
+    if not pdb_file:
+        raise HTTPException(status_code=502, detail="ESMFold (ESM Atlas) prediction failed or timed out")
+
+    return {"status": "ok", "pdb_url": f"/runs/{run_id}/files/genes/{'upregulated' if 'upregulated' in str(out_path) else 'downregulated'}/{gene_id}/fold_rapid_{gene_id}.pdb"}
 
 
 @app.get("/health")

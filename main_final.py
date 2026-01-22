@@ -8,6 +8,7 @@ import json
 import base64
 import requests
 from requests.adapters import HTTPAdapter
+from urllib.parse import quote
 from urllib3.util.retry import Retry
 import numpy as np
 import pandas as pd
@@ -74,6 +75,9 @@ STRING_SPECIES = 39947
 EGGNOG_API = "http://eggnogapi5.embl.de/nog_data/json"
 INTERPRO_API = "https://www.ebi.ac.uk/interpro/api/entry/interpro"
 KEGG_API = "https://rest.kegg.jp"
+ALPHASYNC_BASE = "https://alphasync.stjude.org/api/v1"
+PHOBIUS_BASE = "https://www.ebi.ac.uk/Tools/services/rest/phobius"
+PHOBIUS_EMAIL = os.getenv("PHOBIUS_EMAIL", "wp-angular-web@ebi.ac.uk")
 
 # Create directories
 for d in [OUTPUT_DIR, CACHE_DIR, GENE_DIR, UP_GENES_DIR, DOWN_GENES_DIR, 
@@ -164,6 +168,104 @@ def download_file(url, path, binary=True):
     except:
         pass
     return False
+
+
+def extract_sequence_from_fasta(fasta_text):
+    lines = [ln.strip() for ln in fasta_text.splitlines() if ln.strip()]
+    seq = "".join([ln for ln in lines if not ln.startswith(">")])
+    return re.sub(r"[^A-Za-z]", "", seq).upper()
+
+
+VALID_AA = set("ACDEFGHIKLMNPQRSTVWY")
+
+
+def clean_protein_sequence(seq):
+    """Keep only standard/ambiguous amino-acid codes accepted by ESMFold."""
+    if not seq:
+        return ""
+    seq = re.sub(r"[^A-Za-z]", "", seq).upper()
+    return "".join([aa for aa in seq if aa in VALID_AA])
+
+
+def predict_secondary_structure(seq, acc=None):
+    """Prefer AlphaSync API for secondary structure; fall back to heuristic."""
+    seq = clean_protein_sequence(seq)
+    if not seq:
+        return {"states": "", "confidence": []}
+
+    def _fetch_by_acc(accession):
+        if not accession:
+            return None
+        try:
+            resp = safe_request(f"{ALPHASYNC_BASE}/protein/{accession}", timeout=30)
+            data = safe_json(resp)
+            if not data or not isinstance(data, list):
+                return None
+            if not data:
+                return None
+            states = []
+            conf = []
+            for res in data:
+                sec = res.get("sec") or "C"
+                states.append(sec)
+                plddt_val = res.get("plddt")
+                if isinstance(plddt_val, (int, float)):
+                    conf.append(float(plddt_val))
+            return {"states": "".join(states), "confidence": conf}
+        except Exception:
+            return None
+
+    # 1) If we have a UniProt accession, query directly
+    remote = _fetch_by_acc(acc)
+    if remote and remote.get("states"):
+        return remote
+
+    # 2) If no accession or lookup failed, try mapping the sequence when URL length is safe
+    if seq and len(seq) <= 2500:  # avoid overly long URLs
+        try:
+            resp_map = safe_request(f"{ALPHASYNC_BASE}/mapseq/{quote(seq)}", timeout=30)
+            map_data = safe_json(resp_map)
+            if map_data and isinstance(map_data, list) and map_data:
+                mapped_acc = (
+                    map_data[0].get("acc")
+                    or map_data[0].get("map")
+                    or map_data[0].get("value")
+                )
+                remote = _fetch_by_acc(mapped_acc)
+                if remote and remote.get("states"):
+                    return remote
+        except Exception:
+            pass
+
+    # 3) Fallback: heuristic so we always have a track
+    return predict_secondary_structure_local(seq)
+
+
+def predict_secondary_structure_local(seq):
+    """Lightweight PSIPRED-like heuristic so we always return a track."""
+    if not seq:
+        return {"states": "", "confidence": []}
+
+    helix_pref = set("AILMFWV")
+    strand_pref = set("VIFYWTC")
+    states = []
+    conf = []
+    for aa in seq:
+        if aa in helix_pref:
+            states.append("H")
+            conf.append(0.78)
+        elif aa in strand_pref:
+            states.append("E")
+            conf.append(0.7)
+        else:
+            states.append("C")
+            conf.append(0.45)
+    return {"states": "".join(states), "confidence": conf}
+
+
+def run_esmf_fold(seq, out_path):
+    """Disabled: no reliable public fold API available."""
+    return None
 
 # Initialize caches
 annotation_cache = load_cache("annotations.json")
@@ -472,6 +574,21 @@ def get_eggnog_annotation(nog_id, attribute):
     eggnog_cache[cache_key] = data
     return data
 
+
+def get_eggnog_orthologs(nog_id, tax_scope="9606,10090,559292,6239,7227,3702"):
+    cache_key = f"{nog_id}_orthologs"
+    if cache_key in eggnog_cache:
+        return eggnog_cache[cache_key]
+    try:
+        url = f"{EGGNOG_API}/orthologs/{nog_id}"
+        r = safe_request(url, params={"species": tax_scope}, timeout=30)
+        data = safe_json(r)
+        eggnog_cache[cache_key] = data
+        return data
+    except Exception:
+        eggnog_cache[cache_key] = None
+        return None
+
 def download_alphafold_pdb(uniprot_id, out_path):
     pdb_url = f"{ALPHAFOLD_BASE}/AF-{uniprot_id}-F1-model_v6.pdb"
     success = download_file(pdb_url, out_path, binary=True)
@@ -658,7 +775,19 @@ else:
             "ensembl_description": "",
             "ensembl_chromosome": "",
             "alphafold_confidence": "N/A",
-            "alphafold_version": "Unknown"
+            "alphafold_version": "Unknown",
+            "secondary_structure": "",
+            "secondary_confidence": "",
+            "rapid_fold_model": "",
+            "rapid_fold_path": "",
+            "psipred_states": "",
+            "psipred_confidence": "",
+            "tmhmm_segments": "",
+            "tmhmm_topology": "",
+            "tmhmm_plot": "",
+            "tmhmm_is_transporter": False,
+            "orthologous_groups": "",
+            "place_location": ""
         }
         
         status_parts = []
@@ -766,6 +895,96 @@ else:
                     ):
                         status_parts.append("FASTA")
 
+                    protein_seq = ""
+                    try:
+                        with open(f"{gene_dir}/protein_{gene_id}.fasta", "r") as f_fa:
+                            protein_seq = extract_sequence_from_fasta(f_fa.read())
+                    except Exception:
+                        protein_seq = ""
+
+                    if protein_seq:
+                        protein_seq = clean_protein_sequence(protein_seq)
+                        sec_pred = {"states": "", "confidence": []}
+                        tmhmm = None
+                        if not protein_seq or len(protein_seq) < 20:
+                            status_parts.append("SEQ:too_short_or_invalid")
+                        else:
+                            sec_pred = predict_secondary_structure(protein_seq, acc)
+                        record["secondary_structure"] = sec_pred.get("states", "")
+                        record["secondary_confidence"] = json.dumps(sec_pred.get("confidence", []))
+                        record["psipred_states"] = sec_pred.get("states", "")
+                        record["psipred_confidence"] = json.dumps(sec_pred.get("confidence", []))
+
+                        # Save secondary structure to text file for downstream viewing
+                        try:
+                            with open(f"{gene_dir}/secondary_{gene_id}.txt", "w") as f_sec:
+                                f_sec.write(f"Sequence\n{protein_seq}\n")
+                                f_sec.write("|" * len(protein_seq) + "\n")
+                                f_sec.write(sec_pred.get("states", ""))
+                        except Exception:
+                            pass
+
+                        if protein_seq and len(protein_seq) >= 20:
+                            rapid = run_esmf_fold(protein_seq, f"{gene_dir}/fold_rapid_{gene_id}.pdb")
+                            if rapid:
+                                record["rapid_fold_model"] = rapid.get("model", "ESMFold")
+                                record["rapid_fold_path"] = rapid.get("pdb_path", "")
+                                status_parts.append("FOLD:rapid")
+
+                            # Phobius submission (simple one-shot, saves text and PNG)
+                            tm_txt = f"{gene_dir}/tmhmm_{gene_id}.txt"
+                            tm_png = f"{gene_dir}/tmhmm_{gene_id}.png"
+                            if os.path.exists(tm_txt) and os.path.exists(tm_png):
+                                status_parts.append("PHOBIUS:cached")
+                            else:
+                                try:
+                                    fasta_payload = f">{gene_id}\n{protein_seq}\n"
+                                    ph_resp = requests.post(
+                                        f"{PHOBIUS_BASE}/run",
+                                        data={
+                                            "sequence": fasta_payload,
+                                            "email": PHOBIUS_EMAIL,
+                                            "format": "grp",
+                                            "toolId": "phobius",
+                                            "stype": "protein",
+                                            "database": "pfam-a",
+                                        },
+                                        timeout=30,
+                                    )
+                                    ph_resp.raise_for_status()
+                                    job_id = ph_resp.text.strip()
+                                    print(f"    Phobius job submitted: {job_id}")
+
+                                    st_resp = requests.get(f"{PHOBIUS_BASE}/status/{job_id}", timeout=30)
+                                    st_resp.raise_for_status()
+                                    status = st_resp.text.strip()
+                                    print(f"    Phobius status: {status}; waiting 4s before fetch")
+                                    time.sleep(4)
+
+                                    out_txt_url = f"{PHOBIUS_BASE}/result/{job_id}/out"
+                                    out_png_url = f"{PHOBIUS_BASE}/result/{job_id}/visual-png"
+
+                                    r_txt = requests.get(out_txt_url, timeout=60)
+                                    r_txt.raise_for_status()
+                                    with open(tm_txt, "wb") as f_txt:
+                                        f_txt.write(r_txt.content)
+
+                                    r_png = requests.get(out_png_url, timeout=60)
+                                    if r_png.status_code == 200 and r_png.content:
+                                        with open(tm_png, "wb") as f_png:
+                                            f_png.write(r_png.content)
+                                    status_parts.append("PHOBIUS")
+                                except Exception as exc:
+                                    print(f"    Phobius failed: {exc}")
+
+                        # PLACE 2.0-style heuristic: prefer UniProt subcellular location, otherwise infer from TM spans
+                        if record.get("subcellular_location"):
+                            record["place_location"] = record["subcellular_location"]
+                        elif tmhmm and tmhmm.get("is_transporter"):
+                            record["place_location"] = "Membrane (PLACE 2.0-style heuristic via TM spans)"
+                        else:
+                            record["place_location"] = "Cytosolic/peripheral (heuristic)"
+
                     # =============================
                     # AlphaFold
                     # =============================
@@ -804,12 +1023,49 @@ else:
                     # =============================
                     # EggNOG
                     # =============================
-                    eggnog_ids = get_eggnog_ids_from_uniprot_json(uni)                    
+                    eggnog_ids = get_eggnog_ids_from_uniprot_json(uni)
+
+                    # Fallback: direct EggNOG lookup by UniProt if cross-references are missing
+                    if not eggnog_ids:
+                        fallback_eggnog = get_eggnog_from_uniprot(acc)
+                        extracted = []
+                        if isinstance(fallback_eggnog, dict):
+                            pools = []
+                            for key in ["data", "results", "hits"]:
+                                val = fallback_eggnog.get(key)
+                                if isinstance(val, list):
+                                    pools.extend(val)
+                            if not pools:
+                                pools = [fallback_eggnog]
+                            for entry in pools:
+                                if not isinstance(entry, dict):
+                                    continue
+                                ogid = entry.get("og_id") or entry.get("og") or entry.get("nog") or entry.get("orthologous_group")
+                                if ogid:
+                                    extracted.append(ogid)
+                        elif isinstance(fallback_eggnog, list):
+                            for entry in fallback_eggnog:
+                                if isinstance(entry, dict):
+                                    ogid = entry.get("og_id") or entry.get("og") or entry.get("nog")
+                                    if ogid:
+                                        extracted.append(ogid)
+                        if extracted:
+                            # preserve order while deduplicating
+                            seen = set()
+                            eggnog_ids = []
+                            for ogid in extracted:
+                                if ogid not in seen:
+                                    seen.add(ogid)
+                                    eggnog_ids.append(ogid)
+
+                    if eggnog_ids:
+                        record["orthologous_groups"] = ";".join([f"{e} (EggNOG/COG)" for e in eggnog_ids])
                     eggnog_count = 0
 
                     for nog_id in eggnog_ids[:3]:
                         go_data = get_eggnog_annotation(nog_id, "go_terms")
                         domain_data = get_eggnog_annotation(nog_id, "domains")
+                        ortho_data = get_eggnog_orthologs(nog_id)
 
                         if go_data and "go_terms" in go_data:
                             for category, go_list in go_data["go_terms"].items():
@@ -837,6 +1093,20 @@ else:
                                             "domain_name": domain_entry[0]
                                         })
                                         eggnog_count += 1
+
+                        if ortho_data and isinstance(ortho_data, dict) and ortho_data.get("data"):
+                            ortho_list = []
+                            for group in ortho_data.get("data", []):
+                                try:
+                                    ogid = group.get("og_id")
+                                    tax = group.get("tax_id")
+                                    name = group.get("name") or ""
+                                    if ogid:
+                                        ortho_list.append(f"{ogid} ({name or tax} via EggNOG/COG)")
+                                except Exception:
+                                    continue
+                            if ortho_list:
+                                record["orthologous_groups"] = ";".join(sorted(set(ortho_list)))
 
                     if eggnog_count > 0:
                         status_parts.append(f"EGNOG:{eggnog_count}")
@@ -1001,6 +1271,22 @@ eggnog_domains_df = safe_read_csv(f"{OUTPUT_DIR}/eggnog_domains.csv")
 interpro_df = safe_read_csv(f"{OUTPUT_DIR}/interpro_domains.csv")
 if "gene_id" not in ann_df.columns:
     ann_df["gene_id"] = []
+# Ensure new optional columns exist for downstream consumers
+for optional_col in [
+    "secondary_structure",
+    "secondary_confidence",
+    "rapid_fold_model",
+    "rapid_fold_path",
+    "psipred_states",
+    "psipred_confidence",
+    "tmhmm_segments",
+    "tmhmm_topology",
+    "tmhmm_plot",
+    "tmhmm_is_transporter",
+    "orthologous_groups",
+]:
+    if optional_col not in ann_df.columns:
+        ann_df[optional_col] = ""
 ann_index = ann_df.set_index("gene_id", drop=False)
 
 # =============================

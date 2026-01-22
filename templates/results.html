@@ -31,6 +31,11 @@
             <p class="hint" id="volcano-hint">Loading volcano data...</p>
         </div>
     </div>
+    <div class="search-bar">
+        <label for="gene-search" class="hint">Search genes by any annotation (ID, protein, function, domains, GO, KEGG, InterPro, EggNOG)</label>
+        <input id="gene-search" type="text" placeholder="Start typing to filter (live)">
+    </div>
+    <div id="gene-search-results" class="search-results"></div>
     <div id="volcano-plot" style="height:700px; width:100%;"></div>
 </section>
 
@@ -71,6 +76,10 @@
     const genePanel = document.getElementById('gene-panel');
     const log2fcThresh = {{ run.params.log2fc_threshold or 1.0 }};
     const pvalThresh = {{ run.params.pvalue_threshold or 0.05 }};
+    const searchInput = document.getElementById('gene-search');
+    const searchResults = document.getElementById('gene-search-results');
+    let volcanoPoints = [];
+    let searchIndex = [];
 
     function truncateText(text, max = 140) {
         if (!text) return '';
@@ -83,11 +92,94 @@
         return Number(val).toExponential(2);
     }
 
+    function buildSearchIndex(pts) {
+        searchIndex = pts.map(p => {
+            const fields = [
+                { label: 'Gene', value: p.gene_id || '' },
+                { label: 'Protein', value: p.protein || '' },
+                { label: 'Function', value: p.function || '' },
+                { label: 'Domains', value: p.domains || '' },
+                { label: 'InterPro', value: p.interpro_domains || p.interpro_text || '' },
+                { label: 'Pfam', value: p.pfam_domains || '' },
+                { label: 'CATH', value: p.cath_domains || '' },
+                { label: 'GO BP', value: p.go_bp || '' },
+                { label: 'GO MF', value: p.go_mf || '' },
+                { label: 'GO CC', value: p.go_cc || '' },
+                { label: 'EggNOG GO', value: p.eggnog_go_text || '' },
+                { label: 'EggNOG domains', value: p.eggnog_domain_text || '' },
+                { label: 'KEGG', value: p.kegg_text || '' },
+                { label: 'InterPro detail', value: p.interpro_text || '' },
+                { label: 'Orthologs', value: p.orthologs || '' },
+            ];
+
+            return {
+                gene: p.gene_id || '',
+                protein: p.protein || '',
+                func: p.function || '',
+                domains: p.domains || '',
+                fields
+            };
+        });
+    }
+
+    function renderSearchResults(matches) {
+        if (!searchResults) return;
+        if (!matches.length) {
+            searchResults.innerHTML = '<p class="hint">No matching genes.</p>';
+            return;
+        }
+        const rows = matches.slice(0, 20).map(m => (
+            `<button class="search-hit" data-gene="${m.gene}">
+                <span class="hit-gene">${m.gene}</span>
+                <span class="hit-desc">${truncateText(m.matchValue || m.func || m.protein || 'No description', 160)}${m.matchField ? ` <span class="hint">(${m.matchField})</span>` : ''}</span>
+            </button>`
+        ));
+        searchResults.innerHTML = rows.join('');
+        searchResults.querySelectorAll('.search-hit').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const g = btn.getAttribute('data-gene');
+                if (g) { loadGene(g); }
+            });
+        });
+    }
+
+    function handleSearchInput() {
+        if (!searchInput) return;
+        const term = searchInput.value.trim().toLowerCase();
+        if (!term) {
+            searchResults.innerHTML = '<p class="hint">Type to filter genes.</p>';
+            return;
+        }
+        const matches = [];
+        searchIndex.forEach(entry => {
+            let matchField = '';
+            let matchValue = '';
+            for (const f of entry.fields) {
+                if (f.value && f.value.toLowerCase().includes(term)) {
+                    matchField = f.label;
+                    matchValue = f.value;
+                    break;
+                }
+            }
+            if (matchField) {
+                matches.push({ ...entry, matchField, matchValue });
+            }
+        });
+        renderSearchResults(matches);
+    }
+
+    if (searchInput) {
+        searchInput.addEventListener('input', handleSearchInput);
+    }
+
     async function loadVolcano() {
         try {
             const res = await fetch(`/runs/${runId}/volcano`);
             const data = await res.json();
             const pts = data.points || [];
+            volcanoPoints = pts;
+            buildSearchIndex(pts);
+            handleSearchInput();
             if (!pts.length) { volcanoHint.textContent = 'No data available for volcano plot.'; return; }
 
             const split = { up: [], down: [], non: [] };
@@ -198,15 +290,23 @@
         const cy = cytoscape({
             container: cyDiv,
             elements,
-            layout: { name: 'cose', animate: false },
-            wheelSensitivity: 0.1,
+            layout: {
+                name: 'cose',
+                animate: false,
+                padding: 50
+            },
+            wheelSensitivity: 0.12,
+            minZoom: 0.2,
+            maxZoom: 2.5,
             style: [
-                { selector: 'node', style: { 'background-color': 'data(color)', 'label': 'data(label)', 'color': '#0f172a', 'font-size': '10px', 'width': 28, 'height': 28, 'text-outline-color': '#ffffff', 'text-outline-width': 2, 'border-color': '#000', 'border-width': 1 } },
-                { selector: 'node[type = "query"]', style: { 'border-color': '#000000', 'border-width': 1 } },
+                { selector: 'node', style: { 'background-color': 'data(color)', 'label': 'data(label)', 'color': '#0f172a', 'font-size': '9px', 'width': 18, 'height': 18, 'text-outline-color': '#ffffff', 'text-outline-width': 2, 'border-color': '#000', 'border-width': 1 } },
+                { selector: 'node[type = "query"]', style: { 'border-color': '#000000', 'border-width': 1.5, 'width': 22, 'height': 22 } },
                 { selector: 'edge', style: { 'line-color': '#000000', 'width': 2, 'curve-style': 'bezier' } }
             ]
         });
-        cy.ready(() => cy.fit());
+        cy.ready(() => {
+            cy.fit();
+        });
 
         // summarize component sizes for legend
         const counts = {};
@@ -218,6 +318,12 @@
         if (legendEl) {
             legendEl.textContent = legend ? `Query node in blue (if present); components sized: ${legend}.` : 'Query node in blue (if present).';
         }
+
+        cy.on('tap', 'node', evt => {
+            const nodeId = evt.target.id();
+            const url = `https://www.uniprot.org/uniprotkb?query=${encodeURIComponent(nodeId)}`;
+            window.open(url, '_blank', 'noopener');
+        });
     }
 
     function renderNGL(pdbText) {
@@ -232,11 +338,40 @@
         });
     }
 
+    function renderESM(pdbUrl) {
+        const container = document.getElementById('esm-viewer');
+        if (!container) return;
+        container.innerHTML = '';
+        if (!pdbUrl) {
+            container.innerHTML = '<p class="hint">No ESMFold structure available.</p>';
+            return;
+        }
+        fetch(pdbUrl)
+            .then(r => r.text())
+            .then(pdbText => {
+                const stage = new NGL.Stage(container, { backgroundColor: '#ffffff' });
+                const blob = new Blob([pdbText], { type: 'text/plain' });
+                stage.loadFile(blob, { ext: 'pdb' }).then(comp => {
+                    comp.addRepresentation('cartoon', { colorScheme: 'bfactor' });
+                    comp.autoView();
+                });
+            })
+            .catch(() => {
+                container.innerHTML = '<p class="hint">Failed to load ESMFold structure.</p>';
+            });
+    }
+
     function renderGene(detail) {
         geneTitle.textContent = detail.gene_id;
         const pvalText = formatSci(detail.p_value);
         const adjText = formatSci(detail.adj_p_value || detail.p_value);
         const regBadge = detail.regulation === 'up' ? 'Upregulated' : 'Downregulated';
+        const plainSeq = detail.plain_sequence || '';
+        const cleanSeq = plainSeq.replace(/[^A-Za-z]/g, '').toUpperCase();
+        const header = detail.gene_id || 'unnamed';
+        const paeUrl = cleanSeq && cleanSeq.length >= 20
+            ? `https://esmatlas.com/resources/fold/result?fasta_header=%3E${encodeURIComponent(header)}&sequence=${encodeURIComponent(cleanSeq)}`
+            : '';
         genePanel.innerHTML = `
             <div class="grid">
                 <div class="field"><p class="hint">log2FC</p><p class="strong">${detail.log2FC?.toFixed(3) ?? 'N/A'}</p></div>
@@ -246,6 +381,24 @@
                 <div class="field"><p class="hint">Protein</p><p class="strong">${detail.protein_name || 'Unknown'}</p></div>
                 <div class="field"><p class="hint">UniProt</p><p class="strong">${detail.uniprot_id || 'N/A'}</p></div>
             </div>
+
+            <h3>Sequence</h3>
+            <pre class="fasta-block">${detail.plain_sequence || detail.fasta || 'Not available'}</pre>
+            ${detail.fasta_path ? `<a class="link" href="${detail.fasta_path}" target="_blank">Download FASTA</a>` : ''}
+
+            <h3>Secondary structure</h3>
+            <p class="hint">H = helix, E = strand, C = coil.</p>
+            ${plainSeq && (detail.psipred_states || detail.secondary_structure) ? `
+                <pre class="track-block">${plainSeq}\n${'|'.repeat(plainSeq.length)}\n${detail.psipred_states || detail.secondary_structure}</pre>
+            ` : `<pre class="track-block">${detail.psipred_states || detail.secondary_structure || 'No prediction'}</pre>`}
+
+            <h3>Transmembrane Helix Prediction</h3>
+            ${detail.tmhmm_plot ? `<img src="${detail.tmhmm_plot}" class="tmhmm-img" alt="Phobius plot">` : '<p class="hint">No TM plot available.</p>'}
+            ${detail.tmhmm_text ? `<pre class="track-block">${detail.tmhmm_text}</pre>` : '<p class="hint">No TM text available.</p>'}
+            ${detail.tmhmm_text_url ? `<a class="link" href="${detail.tmhmm_text_url}" target="_blank">Download TM text</a>` : ''}
+
+            <h3>Orthologous groups</h3>
+            ${Array.isArray(detail.orthologs) && detail.orthologs.length ? `<table class="data-table"><thead><tr><th>EggNOG/OG ID</th></tr></thead><tbody>${detail.orthologs.map(o => `<tr><td>${o}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">No orthologous group IDs found.</p>'}
 
             <h3>Function</h3>
             <p>${detail.function || 'Not available'}</p>
@@ -275,20 +428,35 @@
             <h3>InterPro annotations</h3>
             ${Array.isArray(detail.interpro) && detail.interpro.length ? `<table class="data-table"><thead><tr><th>ID</th><th>Name</th></tr></thead><tbody>${detail.interpro.slice(0,30).map(i => `<tr><td>${i.interpro_id || ''}</td><td>${i.domain_name || ''}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">No InterPro detail.</p>'}
 
-            <h3><strong>Sequences & Structure</strong></h3>
+            <h3><strong>Fold prediction & structure</strong></h3>
             <div style="width:100%; display:grid; gap:16px;">
-                <div class="field" style="width:100%;">
-                    <p class="hint"><strong>FASTA</strong></p>
-                    <pre style="max-height:240px; overflow:auto; width:100%;">${detail.fasta || 'Not available'}</pre>
-                    ${detail.fasta_path ? `<a class="link" href="${detail.fasta_path}" target="_blank">Download FASTA</a>` : ''}
-                </div>
-                <div class="field" style="width:100%; display:flex; flex-direction:column; align-items:center;">
-                    <p class="hint" style="text-align:center;"><strong>AlphaFold / PDB</strong></p>
+                <div class="field" style="width:100%; display:flex; flex-direction:column; gap:6px;">
+                    <p class="hint"><strong>AlphaFold</strong></p>
+                    <div class="hint">Confidence: ${detail.alphafold_confidence || 'N/A'} | Version: ${detail.alphafold_version || 'N/A'}</div>
                     <div id="ngl-viewer" style="width:100%; height:60vh; max-height:640px; border:1px solid var(--border); border-radius:8px;"></div>
                     ${detail.pdb_path ? `<a class="link" href="${detail.pdb_path}" target="_blank">Download PDB</a>` : ''}
                     ${detail.uniprot_id ? `<div style="margin-top:8px;"><a class="btn secondary" href="https://alphafold.ebi.ac.uk/search/text/${encodeURIComponent((detail.uniprot_id || '').toUpperCase())}" target="_blank" rel="noreferrer">View on AlphaFold</a></div>` : ''}
-                    <div class="hint" style="margin-top:8px; text-align:center;">Confidence: ${detail.alphafold_confidence || 'N/A'} | Version: ${detail.alphafold_version || 'N/A'}</div>
+                    ${detail.uniprot_id ? `
+                        <div class="hint" style="margin-top:10px;"><strong>Residue level data</strong> · <a class="link" href="https://alphasync.stjude.org/display/${encodeURIComponent((detail.uniprot_id || '').toUpperCase())}" target="_blank" rel="noreferrer">Open on AlphaSync</a></div>
+                        <iframe src="https://alphasync.stjude.org/display/${encodeURIComponent((detail.uniprot_id || '').toUpperCase())}" style="width:100%; height:450px; border:1px solid var(--border); border-radius:8px; background:#fff;" loading="lazy"></iframe>
+                    ` : '<div class="hint">Residue-level data unavailable (missing UniProt ID).</div>'}
                 </div>
+                <div class="field" style="width:100%; display:flex; flex-direction:column; gap:6px;">
+                    <p class="hint"><strong>Fold prediction</strong></p>
+                    ${detail.rapid_fold_pdb ? `<a class="link" href="${detail.rapid_fold_pdb}" target="_blank">Download ESMFold PDB</a>` : ''}
+                    ${paeUrl ? `
+                        <div style="margin-top:10px;">
+                            <p class="hint">ESMFold (sequence-based)</p>
+                            <iframe title="ESMFold" src="${paeUrl}" style="width:100%; height:520px; border:1px solid var(--border); border-radius:8px; background:#fff;"></iframe>
+                        </div>
+                    ` : '<div class="hint" style="margin-top:6px;">ESMFold unavailable (missing or short sequence).</div>'}
+                </div>
+            </div>
+
+            <h3>PSI-BLAST</h3>
+            <p class="hint">Launch an on-demand PSI-BLAST at NCBI with this sequence.</p>
+            <div class="actions">
+                <button class="btn secondary" id="psiblast-btn">Run PSI-BLAST (NCBI)</button>
             </div>
 
             <h3>STRING network</h3>
@@ -297,6 +465,7 @@
                 <div id="cyto" class="string-panel" style="border:1px solid var(--border); border-radius:8px;"></div>
             </div>
             <p id="cy-legend" class="hint" style="margin-top:6px;">Query node in blue (if present in network); other nodes grouped by connected component color.</p>
+            <p class="hint">Click any node to open it on UniProt.</p>
             ${Array.isArray(detail.string_edges) && detail.string_edges.length ? `
                 <h4>Interaction scores</h4>
                 <table class="data-table"><thead><tr><th>Source</th><th>Target</th><th>Score</th></tr></thead><tbody>
@@ -309,6 +478,7 @@
         const queryId = detail.uniprot_id || detail.gene_id;
         renderCytoscape(detail.string_edges, queryId);
         renderNGL(detail.pdb);
+        renderESM(detail.rapid_fold_pdb);
         genePanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
@@ -319,6 +489,33 @@
             if (!res.ok) throw new Error('Gene not found');
             const detail = await res.json();
             renderGene(detail);
+            // Wire PSI-BLAST launcher after content renders
+            const btn = document.getElementById('psiblast-btn');
+            if (btn && detail.plain_sequence) {
+                btn.onclick = () => {
+                    const form = document.createElement('form');
+                    form.method = 'POST';
+                    form.action = 'https://blast.ncbi.nlm.nih.gov/Blast.cgi';
+                    form.target = '_blank';
+                    form.style.display = 'none';
+                    const params = {
+                        CMD: 'Put',
+                        PROGRAM: 'blastp',
+                        BLAST_PROGRAMS: 'blastp',
+                        QUERY: detail.plain_sequence,
+                        DATABASE: 'nr'
+                    };
+                    Object.entries(params).forEach(([k, v]) => {
+                        const inp = document.createElement('textarea');
+                        inp.name = k;
+                        inp.value = v;
+                        form.appendChild(inp);
+                    });
+                    document.body.appendChild(form);
+                    form.submit();
+                    setTimeout(() => form.remove(), 5000);
+                };
+            }
         } catch (err) {
             console.error(err);
             genePanel.innerHTML = '<p class="hint">Failed to load gene details.</p>';
