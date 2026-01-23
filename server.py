@@ -26,10 +26,18 @@ RUNS_DIR = ROOT_DIR / "runs"
 RUNS_DIR.mkdir(exist_ok=True)
 PHOBIUS_BASE = "https://www.ebi.ac.uk/Tools/services/rest/phobius"
 PHOBIUS_EMAIL = os.getenv("PHOBIUS_EMAIL", "admin@tapipe.res.in")
+FAVICON_PATH = ROOT_DIR / "favicon.ico"
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 app = FastAPI(title="Transcriptomics Pipeline Web Server", version="1.0.0")
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    if FAVICON_PATH.exists():
+        return FileResponse(str(FAVICON_PATH))
+    raise HTTPException(status_code=404, detail="Favicon not found")
 
 
 class RunManager:

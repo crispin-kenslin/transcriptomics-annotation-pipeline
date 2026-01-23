@@ -79,10 +79,14 @@ KEGG_API = "https://rest.kegg.jp"
 ALPHASYNC_BASE = "https://alphasync.stjude.org/api/v1"
 PHOBIUS_BASE = "https://www.ebi.ac.uk/Tools/services/rest/phobius"
 PHOBIUS_EMAIL = os.getenv("PHOBIUS_EMAIL", "wp-angular-web@ebi.ac.uk")
+ENABLE_GOR4 = env_bool("ENABLE_GOR4", True)
+ENABLE_PHOBIUS = env_bool("ENABLE_PHOBIUS", True)
+PHOBIUS_MAX_POLLS = int(os.getenv("PHOBIUS_MAX_POLLS", "12"))
+PHOBIUS_POLL_DELAY = env_float("PHOBIUS_POLL_DELAY", 4.0)
 GOR4_POST_URL = "https://npsa-prabi.ibcp.fr/cgi-bin/secpred_gor4.pl"
 GOR4_TMP_BASE = "https://npsa-prabi.ibcp.fr/tmp"
 GOR4_ALI_WIDTH = os.getenv("GOR4_ALI_WIDTH", "70")
-GOR4_MAX_POLLS = int(os.getenv("GOR4_MAX_POLLS", "20"))
+GOR4_MAX_POLLS = int(os.getenv("GOR4_MAX_POLLS", "10"))
 GOR4_POLL_DELAY = env_float("GOR4_POLL_DELAY", 2.0)
 GOR4_HEADER = "Pos|AA|Prediction|P(H)|P(E)|P(C)"
 GOR4_JOB_REGEX = re.compile(r"/tmp/([a-f0-9]+)\.gor4")
@@ -328,7 +332,9 @@ def predict_secondary_structure(seq, acc=None, gene_dir=None, gene_id=None):
     if not seq:
         return {"states": "", "confidence": [], "formatted_lines": [], "method": "none"}
 
-    gor4_result = predict_secondary_structure_gor4(seq, gene_dir=gene_dir, gene_id=gene_id)
+    gor4_result = None
+    if ENABLE_GOR4:
+        gor4_result = predict_secondary_structure_gor4(seq, gene_dir=gene_dir, gene_id=gene_id)
     if gor4_result and gor4_result.get("states"):
         return gor4_result
 
@@ -400,6 +406,80 @@ def predict_secondary_structure_local(seq):
             states.append("C")
             conf.append(0.45)
     return {"states": "".join(states), "confidence": conf, "formatted_lines": [], "method": "heuristic"}
+
+
+def _poll_phobius_job(job_id):
+    status_url = f"{PHOBIUS_BASE}/status/{job_id}"
+    for attempt in range(max(PHOBIUS_MAX_POLLS, 1)):
+        try:
+            resp = requests.get(status_url, timeout=30)
+            resp.raise_for_status()
+            status = (resp.text or "").strip().upper()
+        except Exception as exc:
+            status = ""
+            if attempt == PHOBIUS_MAX_POLLS - 1:
+                raise RuntimeError(f"Phobius status check failed: {exc}") from exc
+
+        if not status or status in {"RUNNING", "PENDING", "QUEUED"}:
+            time.sleep(PHOBIUS_POLL_DELAY)
+            continue
+        if status in {"FINISHED", "FINISH", "COMPLETE", "COMPLETED"}:
+            return "FINISHED"
+        if status in {"ERROR", "FAILED", "FAILURE"}:
+            raise RuntimeError(f"Phobius job {job_id} reported {status}")
+        if status in {"NOT_FOUND", "UNKNOWN"}:
+            raise RuntimeError(f"Phobius job {job_id} not found")
+        return status
+    raise RuntimeError(f"Phobius job {job_id} timed out after {PHOBIUS_MAX_POLLS} polls")
+
+
+def run_phobius_prediction(protein_seq, gene_id, gene_dir):
+    gene_path = Path(gene_dir)
+    tm_txt = gene_path / f"tmhmm_{gene_id}.txt"
+    tm_png = gene_path / f"tmhmm_{gene_id}.png"
+
+    if tm_txt.exists() and tm_png.exists():
+        return "cached"
+    if not ENABLE_PHOBIUS:
+        return "disabled"
+    if not protein_seq or len(protein_seq) < 20:
+        return "skipped"
+
+    try:
+        fasta_payload = f">{gene_id}\n{protein_seq}\n"
+        ph_resp = requests.post(
+            f"{PHOBIUS_BASE}/run",
+            data={
+                "sequence": fasta_payload,
+                "email": PHOBIUS_EMAIL,
+                "format": "grp",
+                "toolId": "phobius",
+                "stype": "protein",
+                "database": "pfam-a",
+            },
+            timeout=30,
+        )
+        ph_resp.raise_for_status()
+        job_id = ph_resp.text.strip()
+        print(f"    Phobius job submitted: {job_id}")
+
+        _ = _poll_phobius_job(job_id)
+
+        out_txt_url = f"{PHOBIUS_BASE}/result/{job_id}/out"
+        out_png_url = f"{PHOBIUS_BASE}/result/{job_id}/visual-png"
+
+        r_txt = requests.get(out_txt_url, timeout=60)
+        r_txt.raise_for_status()
+        tm_txt.write_bytes(r_txt.content)
+
+        r_png = requests.get(out_png_url, timeout=60)
+        if r_png.status_code == 200 and r_png.content:
+            tm_png.write_bytes(r_png.content)
+
+        return "completed"
+    except Exception as exc:
+        print(f"    Phobius failed: {exc}")
+        return "failed"
 
 
 def run_esmf_fold(seq, out_path):
@@ -1044,7 +1124,6 @@ else:
                     if protein_seq:
                         protein_seq = clean_protein_sequence(protein_seq)
                         sec_pred = {"states": "", "confidence": [], "formatted_lines": [], "method": "none"}
-                        tmhmm = None
                         if not protein_seq or len(protein_seq) < 20:
                             status_parts.append("SEQ:too_short_or_invalid")
                         else:
@@ -1081,51 +1160,17 @@ else:
                                 record["rapid_fold_path"] = rapid.get("pdb_path", "")
                                 status_parts.append("FOLD:rapid")
 
-                            # Phobius submission (simple one-shot, saves text and PNG)
-                            tm_txt = f"{gene_dir}/tmhmm_{gene_id}.txt"
-                            tm_png = f"{gene_dir}/tmhmm_{gene_id}.png"
-                            if os.path.exists(tm_txt) and os.path.exists(tm_png):
+                            phobius_state = run_phobius_prediction(protein_seq, gene_id, gene_dir)
+                            if phobius_state == "cached":
                                 status_parts.append("PHOBIUS:cached")
-                            else:
-                                try:
-                                    fasta_payload = f">{gene_id}\n{protein_seq}\n"
-                                    ph_resp = requests.post(
-                                        f"{PHOBIUS_BASE}/run",
-                                        data={
-                                            "sequence": fasta_payload,
-                                            "email": PHOBIUS_EMAIL,
-                                            "format": "grp",
-                                            "toolId": "phobius",
-                                            "stype": "protein",
-                                            "database": "pfam-a",
-                                        },
-                                        timeout=30,
-                                    )
-                                    ph_resp.raise_for_status()
-                                    job_id = ph_resp.text.strip()
-                                    print(f"    Phobius job submitted: {job_id}")
-
-                                    st_resp = requests.get(f"{PHOBIUS_BASE}/status/{job_id}", timeout=30)
-                                    st_resp.raise_for_status()
-                                    status = st_resp.text.strip()
-                                    print(f"    Phobius status: {status}; waiting 4s before fetch")
-                                    time.sleep(4)
-
-                                    out_txt_url = f"{PHOBIUS_BASE}/result/{job_id}/out"
-                                    out_png_url = f"{PHOBIUS_BASE}/result/{job_id}/visual-png"
-
-                                    r_txt = requests.get(out_txt_url, timeout=60)
-                                    r_txt.raise_for_status()
-                                    with open(tm_txt, "wb") as f_txt:
-                                        f_txt.write(r_txt.content)
-
-                                    r_png = requests.get(out_png_url, timeout=60)
-                                    if r_png.status_code == 200 and r_png.content:
-                                        with open(tm_png, "wb") as f_png:
-                                            f_png.write(r_png.content)
-                                    status_parts.append("PHOBIUS")
-                                except Exception as exc:
-                                    print(f"    Phobius failed: {exc}")
+                            elif phobius_state == "completed":
+                                status_parts.append("PHOBIUS")
+                            elif phobius_state == "disabled":
+                                status_parts.append("PHOBIUS:disabled")
+                            elif phobius_state == "skipped":
+                                status_parts.append("PHOBIUS:skipped")
+                            elif phobius_state == "failed":
+                                status_parts.append("PHOBIUS:failed")
 
                         # PLACE 2.0-style heuristic: prefer UniProt subcellular location, otherwise infer from TM spans
                         if record.get("subcellular_location"):
