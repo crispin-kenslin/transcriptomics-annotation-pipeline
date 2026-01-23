@@ -37,6 +37,23 @@
     </div>
     <div id="gene-search-results" class="search-results"></div>
     <div id="volcano-plot" style="height:700px; width:100%;"></div>
+    {% if networks %}
+    <div class="table-block" style="margin-top:12px;">
+        <h3>STRING networks</h3>
+        <p class="hint">STRING network of the entire regulated genes.</p>
+        <div class="list">
+            {% for net in networks %}
+            <div class="list-row">
+                <div>{{ net.label }}</div>
+                <div class="row-actions">
+                    <a class="link" href="{{ net.view_url }}" target="_blank" rel="noreferrer">View</a>
+                    <a class="link" href="{{ net.download_url }}" target="_blank" rel="noreferrer">Download</a>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
 </section>
 
 <section class="card">
@@ -56,13 +73,13 @@
     <div class="card-header">
         <div>
             <p class="eyebrow">Outputs</p>
-            <h2>Downloads & tables</h2>
-            <p class="hint">Open the dedicated downloads & tables page in a new tab.</p>
+            <h2>Summary and Downloads</h2>
+            <p class="hint">Open the downloads & summary tables page.</p>
         </div>
     </div>
     <div class="actions">
         <a class="btn secondary" href="/runs/{{ run_id }}/downloads" target="_blank">Open downloads & tables</a>
-        <a class="btn" href="/runs/{{ run_id }}/download-zip">Download all (zip)</a>
+        <a class="btn" href="/runs/{{ run_id }}/download-zip">Download all output files (zip)</a>
     </div>
 </section>
 
@@ -74,8 +91,8 @@
     const volcanoHint = document.getElementById('volcano-hint');
     const geneTitle = document.getElementById('gene-title');
     const genePanel = document.getElementById('gene-panel');
-    const log2fcThresh = {{ run.params.log2fc_threshold or 1.0 }};
-    const pvalThresh = {{ run.params.pvalue_threshold or 0.05 }};
+    const log2fcThresh = {{ run.params.log2fc_threshold | default(1.0) | safe }};
+    const pvalThresh = {{ run.params.pvalue_threshold | default(0.05) | safe }};
     const searchInput = document.getElementById('gene-search');
     const searchResults = document.getElementById('gene-search-results');
     let volcanoPoints = [];
@@ -387,10 +404,18 @@
             ${detail.fasta_path ? `<a class="link" href="${detail.fasta_path}" target="_blank">Download FASTA</a>` : ''}
 
             <h3>Secondary structure</h3>
-            <p class="hint">H = helix, E = strand, C = coil.</p>
+            <p class="hint">Secondary structure predictions from GOR4 algorithm.</p>
+            <p class="hint">H = helix, E = Extended, C = coil.</p>
             ${plainSeq && (detail.psipred_states || detail.secondary_structure) ? `
                 <pre class="track-block">${plainSeq}\n${'|'.repeat(plainSeq.length)}\n${detail.psipred_states || detail.secondary_structure}</pre>
             ` : `<pre class="track-block">${detail.psipred_states || detail.secondary_structure || 'No prediction'}</pre>`}
+            ${(detail.gor4_state_img || detail.gor4_profile_img || detail.gor4_text_url) ? `
+                <div class="gor4-media">
+                    ${detail.gor4_state_img ? `<img src="${detail.gor4_state_img}" class="gor4-img" alt="GOR4 residue state plot">` : ''}
+                    ${detail.gor4_profile_img ? `<img src="${detail.gor4_profile_img}" class="gor4-img" alt="GOR4 confidence profile">` : ''}
+                </div>
+                ${detail.gor4_text_url ? `<a class="link" href="${detail.gor4_text_url}" target="_blank" rel="noopener">Open GOR4 residue table</a>` : ''}
+            ` : ''}
 
             <h3>Transmembrane Helix Prediction</h3>
             ${detail.tmhmm_plot ? `<img src="${detail.tmhmm_plot}" class="tmhmm-img" alt="Phobius plot">` : '<p class="hint">No TM plot available.</p>'}

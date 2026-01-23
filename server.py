@@ -1120,6 +1120,25 @@ async def gene_detail(run_id: str, gene_id: str):
     else:
         tmhmm_flag = bool(raw_tmhmm_flag)
 
+    gor4_state_path = gene_dir / f"{gene_id}_mpsa_state.gif"
+    gor4_profile_path = gene_dir / f"{gene_id}_mpsa1.gif"
+    gor4_text_path = gene_dir / f"{gene_id}_gor4_raw.txt"
+    gor4_state_url = (
+        f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/{gene_id}_mpsa_state.gif"
+        if gor4_state_path.exists()
+        else None
+    )
+    gor4_profile_url = (
+        f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/{gene_id}_mpsa1.gif"
+        if gor4_profile_path.exists()
+        else None
+    )
+    gor4_text_url = (
+        f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/{gene_id}_gor4_raw.txt"
+        if gor4_text_path.exists()
+        else None
+    )
+
     orthologs = []
     orth_field = row.get("orthologous_groups") if isinstance(row, pd.Series) else ""
     if isinstance(orth_field, str) and orth_field:
@@ -1170,6 +1189,9 @@ async def gene_detail(run_id: str, gene_id: str):
         "tmhmm_is_transporter": tmhmm_flag,
         "tmhmm_text": tmhmm_txt_content,
         "tmhmm_text_url": tmhmm_txt_url,
+        "gor4_state_img": gor4_state_url,
+        "gor4_profile_img": gor4_profile_url,
+        "gor4_text_url": gor4_text_url,
         "place_location": row.get("place_location", ""),
         "string_edges_path": f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/string_edges_{gene_id}.csv" if edges_path.exists() else None,
         "pdb_path": f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/structure_{gene_id}.pdb" if pdb_path.exists() else None,

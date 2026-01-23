@@ -6,6 +6,7 @@ import os
 import time
 import json
 import base64
+from pathlib import Path
 import requests
 from requests.adapters import HTTPAdapter
 from urllib.parse import quote
@@ -78,6 +79,13 @@ KEGG_API = "https://rest.kegg.jp"
 ALPHASYNC_BASE = "https://alphasync.stjude.org/api/v1"
 PHOBIUS_BASE = "https://www.ebi.ac.uk/Tools/services/rest/phobius"
 PHOBIUS_EMAIL = os.getenv("PHOBIUS_EMAIL", "wp-angular-web@ebi.ac.uk")
+GOR4_POST_URL = "https://npsa-prabi.ibcp.fr/cgi-bin/secpred_gor4.pl"
+GOR4_TMP_BASE = "https://npsa-prabi.ibcp.fr/tmp"
+GOR4_ALI_WIDTH = os.getenv("GOR4_ALI_WIDTH", "70")
+GOR4_MAX_POLLS = int(os.getenv("GOR4_MAX_POLLS", "20"))
+GOR4_POLL_DELAY = env_float("GOR4_POLL_DELAY", 2.0)
+GOR4_HEADER = "Pos|AA|Prediction|P(H)|P(E)|P(C)"
+GOR4_JOB_REGEX = re.compile(r"/tmp/([a-f0-9]+)\.gor4")
 
 # Create directories
 for d in [OUTPUT_DIR, CACHE_DIR, GENE_DIR, UP_GENES_DIR, DOWN_GENES_DIR, 
@@ -187,11 +195,142 @@ def clean_protein_sequence(seq):
     return "".join([aa for aa in seq if aa in VALID_AA])
 
 
-def predict_secondary_structure(seq, acc=None):
-    """Prefer AlphaSync API for secondary structure; fall back to heuristic."""
+def _gor4_wait_for_file(url, binary=True):
+    for _ in range(GOR4_MAX_POLLS):
+        try:
+            resp = SESSION.get(url, timeout=60)
+            if resp.status_code == 200 and resp.content:
+                return resp.content if binary else resp.text
+        except Exception:
+            pass
+        time.sleep(GOR4_POLL_DELAY)
+    return None
+
+
+def predict_secondary_structure_gor4(seq, gene_dir=None, gene_id=None):
     seq = clean_protein_sequence(seq)
     if not seq:
-        return {"states": "", "confidence": []}
+        return None
+
+    payload = {"notice": seq, "ali_width": GOR4_ALI_WIDTH}
+    try:
+        resp = SESSION.post(GOR4_POST_URL, data=payload, timeout=60)
+        resp.raise_for_status()
+    except Exception as exc:
+        print(f"    GOR4 submission failed: {exc}")
+        return None
+
+    match = GOR4_JOB_REGEX.search(resp.text)
+    if not match:
+        print("    GOR4 job ID missing in response")
+        return None
+
+    job_id = match.group(1)
+    base_url = f"{GOR4_TMP_BASE}/{job_id}.gor4"
+    reports_dir = Path(gene_dir) if gene_dir else Path(CACHE_DIR) / "gor4"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    artifact_prefix = gene_id if gene_id else f"gor4_{job_id}"
+
+    artifact_paths = {}
+    state_bytes = _gor4_wait_for_file(f"{base_url}.mpsa_state.gif", binary=True)
+    if state_bytes:
+        state_path = reports_dir / f"{artifact_prefix}_mpsa_state.gif"
+        with open(state_path, "wb") as fh:
+            fh.write(state_bytes)
+        artifact_paths["gor4_state"] = str(state_path)
+
+    profile_bytes = _gor4_wait_for_file(f"{base_url}.mpsa1.gif", binary=True)
+    if profile_bytes:
+        profile_path = reports_dir / f"{artifact_prefix}_mpsa1.gif"
+        with open(profile_path, "wb") as fh:
+            fh.write(profile_bytes)
+        artifact_paths["gor4_profile"] = str(profile_path)
+
+    result_text = _gor4_wait_for_file(base_url, binary=False)
+    if not result_text:
+        print("    GOR4 result text was not ready in time")
+        return None
+
+    raw_path = reports_dir / f"{artifact_prefix}_gor4_raw.txt"
+    try:
+        with open(raw_path, "w") as fh:
+            fh.write(result_text)
+        artifact_paths["gor4_raw"] = str(raw_path)
+    except Exception as exc:
+        print(f"    Failed to save raw GOR4 output: {exc}")
+
+    rows = []
+    for line in result_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("SEQ"):
+            continue
+        parts = stripped.split()
+        pos = None
+        if len(parts) == 6 and parts[0].isdigit():
+            pos = int(parts[0])
+            aa, pred = parts[1], parts[2]
+            probs = parts[3:6]
+        elif len(parts) == 5 and len(parts[0]) == 1:
+            aa, pred = parts[0], parts[1]
+            probs = parts[2:5]
+        else:
+            continue
+
+        try:
+            prob_h = float(probs[0])
+            prob_e = float(probs[1])
+            prob_c = float(probs[2])
+        except ValueError:
+            continue
+
+        rows.append({
+            "pos": pos if pos is not None else len(rows) + 1,
+            "aa": aa,
+            "pred": pred,
+            "prob_h": prob_h,
+            "prob_e": prob_e,
+            "prob_c": prob_c,
+        })
+
+    if not rows:
+        print("    GOR4 output contained no residue rows")
+        return None
+
+    states = "".join([row["pred"] for row in rows])
+    confidence = []
+    formatted_lines = [
+        gene_id or artifact_prefix,
+        str(len(seq)),
+        GOR4_HEADER,
+    ]
+
+    for row in rows:
+        pred = row["pred"]
+        prob_map = {"H": row["prob_h"], "E": row["prob_e"], "C": row["prob_c"]}
+        confidence.append(prob_map.get(pred, 0.0))
+        formatted_lines.append(
+            f"{row['pos']}|{row['aa']}|{pred}|{row['prob_h']:.3f}|{row['prob_e']:.3f}|{row['prob_c']:.3f}"
+        )
+
+    return {
+        "states": states,
+        "confidence": confidence,
+        "formatted_lines": formatted_lines,
+        "method": "gor4",
+        "gor4_job_id": job_id,
+        "gor4_artifacts": artifact_paths,
+    }
+
+
+def predict_secondary_structure(seq, acc=None, gene_dir=None, gene_id=None):
+    """Prefer GOR4 API, then AlphaSync, finally a heuristic fallback."""
+    seq = clean_protein_sequence(seq)
+    if not seq:
+        return {"states": "", "confidence": [], "formatted_lines": [], "method": "none"}
+
+    gor4_result = predict_secondary_structure_gor4(seq, gene_dir=gene_dir, gene_id=gene_id)
+    if gor4_result and gor4_result.get("states"):
+        return gor4_result
 
     def _fetch_by_acc(accession):
         if not accession:
@@ -211,7 +350,7 @@ def predict_secondary_structure(seq, acc=None):
                 plddt_val = res.get("plddt")
                 if isinstance(plddt_val, (int, float)):
                     conf.append(float(plddt_val))
-            return {"states": "".join(states), "confidence": conf}
+            return {"states": "".join(states), "confidence": conf, "formatted_lines": [], "method": "alphasync"}
         except Exception:
             return None
 
@@ -244,7 +383,7 @@ def predict_secondary_structure(seq, acc=None):
 def predict_secondary_structure_local(seq):
     """Lightweight PSIPRED-like heuristic so we always return a track."""
     if not seq:
-        return {"states": "", "confidence": []}
+        return {"states": "", "confidence": [], "formatted_lines": [], "method": "heuristic"}
 
     helix_pref = set("AILMFWV")
     strand_pref = set("VIFYWTC")
@@ -260,7 +399,7 @@ def predict_secondary_structure_local(seq):
         else:
             states.append("C")
             conf.append(0.45)
-    return {"states": "".join(states), "confidence": conf}
+    return {"states": "".join(states), "confidence": conf, "formatted_lines": [], "method": "heuristic"}
 
 
 def run_esmf_fold(seq, out_path):
@@ -904,12 +1043,19 @@ else:
 
                     if protein_seq:
                         protein_seq = clean_protein_sequence(protein_seq)
-                        sec_pred = {"states": "", "confidence": []}
+                        sec_pred = {"states": "", "confidence": [], "formatted_lines": [], "method": "none"}
                         tmhmm = None
                         if not protein_seq or len(protein_seq) < 20:
                             status_parts.append("SEQ:too_short_or_invalid")
                         else:
-                            sec_pred = predict_secondary_structure(protein_seq, acc)
+                            sec_pred = predict_secondary_structure(
+                                protein_seq,
+                                acc,
+                                gene_dir=gene_dir,
+                                gene_id=gene_id,
+                            )
+                            if sec_pred.get("method") == "gor4":
+                                status_parts.append("GOR4")
                         record["secondary_structure"] = sec_pred.get("states", "")
                         record["secondary_confidence"] = json.dumps(sec_pred.get("confidence", []))
                         record["psipred_states"] = sec_pred.get("states", "")
@@ -918,9 +1064,13 @@ else:
                         # Save secondary structure to text file for downstream viewing
                         try:
                             with open(f"{gene_dir}/secondary_{gene_id}.txt", "w") as f_sec:
-                                f_sec.write(f"Sequence\n{protein_seq}\n")
-                                f_sec.write("|" * len(protein_seq) + "\n")
-                                f_sec.write(sec_pred.get("states", ""))
+                                formatted_lines = sec_pred.get("formatted_lines") or []
+                                if formatted_lines:
+                                    f_sec.write("\n".join(formatted_lines))
+                                else:
+                                    f_sec.write(f"Sequence\n{protein_seq}\n")
+                                    f_sec.write("|" * len(protein_seq) + "\n")
+                                    f_sec.write(sec_pred.get("states", ""))
                         except Exception:
                             pass
 
