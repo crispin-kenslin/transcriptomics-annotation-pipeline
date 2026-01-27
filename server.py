@@ -733,9 +733,9 @@ async def open_run(run_id: str):
     info = manager.get(run_id)
     if not info:
         raise HTTPException(status_code=404, detail="Run not found")
-    if info["status"] == "completed":
-        return RedirectResponse(url=f"/runs/{run_id}/results", status_code=303)
-    return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+    if info["status"] != "completed":
+        raise HTTPException(status_code=404, detail="Run has not completed yet")
+    return RedirectResponse(url=f"/runs/{run_id}/results", status_code=303)
 
 
 def _safe_read_csv(path: Path):
