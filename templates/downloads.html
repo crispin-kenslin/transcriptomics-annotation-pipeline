@@ -47,7 +47,7 @@
         <h3>Top GO terms (EggNOG)</h3>
         {% if go_summary %}
         <table class="data-table">
-            <thead><tr><th>GO ID</th><th>Name</th><th>Category</th><th>Count</th></tr></thead>
+            <thead><tr><th>GO ID</th><th>Name</th><th>Category</th><th>Occurance</th></tr></thead>
             <tbody>
                 {% for row in go_summary %}
                 <tr>
@@ -68,7 +68,7 @@
         <h3>Top domains (InterPro)</h3>
         {% if interpro_summary %}
         <table class="data-table">
-            <thead><tr><th>Domain</th><th>Type</th><th>Count</th></tr></thead>
+            <thead><tr><th>Domain</th><th>Type</th><th>Occurance</th></tr></thead>
             <tbody>
                 {% for row in interpro_summary %}
                 <tr>
@@ -88,7 +88,7 @@
         <h3>Top domains (EggNOG)</h3>
         {% if eggnog_dom_summary %}
         <table class="data-table">
-            <thead><tr><th>Domain</th><th>Type</th><th>Count</th></tr></thead>
+            <thead><tr><th>Domain</th><th>Type</th><th>Occurance</th></tr></thead>
             <tbody>
                 {% for row in eggnog_dom_summary %}
                 <tr>
