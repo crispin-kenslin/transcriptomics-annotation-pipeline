@@ -11,6 +11,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 from threading import Lock, Thread
+from typing import Optional
 import signal
 
 import pandas as pd
@@ -26,6 +27,12 @@ RUNS_DIR = ROOT_DIR / "runs"
 RUNS_DIR.mkdir(exist_ok=True)
 PHOBIUS_BASE = "https://www.ebi.ac.uk/Tools/services/rest/phobius"
 PHOBIUS_EMAIL = os.getenv("PHOBIUS_EMAIL", "admin@tapipe.res.in")
+PHOBIUS_MAX_WAIT = float(os.getenv("PHOBIUS_MAX_WAIT", "45"))
+PHOBIUS_POLL_INTERVAL = float(os.getenv("PHOBIUS_POLL_INTERVAL", "0.5"))
+PHOBIUS_STATUS_TIMEOUT = float(os.getenv("PHOBIUS_STATUS_TIMEOUT", "10"))
+PHOBIUS_RESULT_TIMEOUT = float(os.getenv("PHOBIUS_RESULT_TIMEOUT", "10"))
+PHOBIUS_RESULT_RETRIES = int(os.getenv("PHOBIUS_RESULT_RETRIES", "40"))
+PHOBIUS_RESULT_DELAY = float(os.getenv("PHOBIUS_RESULT_DELAY", "0.5"))
 FAVICON_PATH = ROOT_DIR / "favicon.ico"
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -775,22 +782,38 @@ def _phobius_submit(fasta_str: str):
     return resp.text.strip()
 
 
-def _phobius_poll(job_id: str, timeout: int = 240, interval: float = 2.0):
+def _phobius_poll(job_id: str, timeout: Optional[float] = None, interval: Optional[float] = None):
+    wait_timeout = timeout or PHOBIUS_MAX_WAIT
+    poll_interval = interval or PHOBIUS_POLL_INTERVAL
     status_url = f"{PHOBIUS_BASE}/status/{job_id}"
-    deadline = time.time() + timeout
+    deadline = time.time() + wait_timeout
     while time.time() < deadline:
-        r = requests.get(status_url, timeout=20)
+        r = requests.get(status_url, timeout=PHOBIUS_STATUS_TIMEOUT)
         r.raise_for_status()
         status = (r.text or "").strip().upper()
         if status == "FINISHED":
             return True
         if status == "ERROR":
             raise RuntimeError("Phobius job failed")
-        if status in {"PENDING", "RUNNING", "QUEUED", "WAITING"}:
-            time.sleep(interval)
-            continue
-        time.sleep(interval)
+        time.sleep(poll_interval)
     raise TimeoutError("Phobius job timed out")
+
+
+def _phobius_fetch_artifact(url: str, binary: bool = True, optional: bool = False):
+    retries = max(PHOBIUS_RESULT_RETRIES, 1)
+    headers = {"User-Agent": "tapipe-phobius-client"}
+    for attempt in range(retries):
+        try:
+            resp = requests.get(url, headers=headers, timeout=PHOBIUS_RESULT_TIMEOUT)
+            if resp.status_code == 200 and resp.content:
+                return resp.content if binary else resp.text
+        except Exception:
+            pass
+        if attempt < retries - 1:
+            time.sleep(PHOBIUS_RESULT_DELAY)
+    if optional:
+        return None
+    raise TimeoutError(f"Phobius artifact not ready: {url}")
 
 
 def _phobius_download(job_id: str, gene_dir: Path, gene_id: str):
@@ -800,14 +823,12 @@ def _phobius_download(job_id: str, gene_dir: Path, gene_id: str):
 
     text_url = f"{PHOBIUS_BASE}/result/{job_id}/out"
     png_url = f"{PHOBIUS_BASE}/result/{job_id}/visual-png"
+    txt_content = _phobius_fetch_artifact(text_url, binary=True)
+    txt_path.write_bytes(txt_content)
 
-    r_txt = requests.get(text_url, headers={"User-Agent": "tapipe-phobius-client"}, timeout=60)
-    r_txt.raise_for_status()
-    txt_path.write_bytes(r_txt.content)
-
-    r_png = requests.get(png_url, headers={"User-Agent": "tapipe-phobius-client"}, timeout=60)
-    if r_png.status_code == 200 and r_png.content:
-        png_path.write_bytes(r_png.content)
+    png_content = _phobius_fetch_artifact(png_url, binary=True, optional=True)
+    if png_content:
+        png_path.write_bytes(png_content)
     else:
         png_path = None
 
@@ -832,7 +853,7 @@ def _run_phobius(seq: str, gene_dir: Path, gene_id: str, force: bool = False):
 
     fasta_payload = f">{gene_id}\n{seq}\n"
     job_id = _phobius_submit(fasta_payload)
-    _phobius_poll(job_id, timeout=240)
+    _phobius_poll(job_id)
     text, txt_path, png_path = _phobius_download(job_id, gene_dir, gene_id)
     return {"text": text, "text_path": txt_path, "png_path": png_path, "job_id": job_id, "cached": False}
 

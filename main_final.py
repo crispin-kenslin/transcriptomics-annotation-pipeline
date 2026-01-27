@@ -79,12 +79,19 @@ KEGG_API = "https://rest.kegg.jp"
 ALPHASYNC_BASE = "https://alphasync.stjude.org/api/v1"
 PHOBIUS_BASE = "https://www.ebi.ac.uk/Tools/services/rest/phobius"
 PHOBIUS_EMAIL = os.getenv("PHOBIUS_EMAIL", "wp-angular-web@ebi.ac.uk")
+PHOBIUS_MAX_WAIT = env_float("PHOBIUS_MAX_WAIT", 45.0)
+PHOBIUS_POLL_INTERVAL = env_float("PHOBIUS_POLL_INTERVAL", 0.5)
+PHOBIUS_STATUS_TIMEOUT = env_float("PHOBIUS_STATUS_TIMEOUT", 10.0)
+PHOBIUS_RESULT_TIMEOUT = env_float("PHOBIUS_RESULT_TIMEOUT", 10.0)
+PHOBIUS_RESULT_RETRIES = int(os.getenv("PHOBIUS_RESULT_RETRIES", "40"))
+PHOBIUS_RESULT_DELAY = env_float("PHOBIUS_RESULT_DELAY", 0.5)
 ENABLE_GOR4 = env_bool("ENABLE_GOR4", True)
 GOR4_POST_URL = "https://npsa-prabi.ibcp.fr/cgi-bin/secpred_gor4.pl"
 GOR4_TMP_BASE = "https://npsa-prabi.ibcp.fr/tmp"
 GOR4_ALI_WIDTH = os.getenv("GOR4_ALI_WIDTH", "70")
-GOR4_MAX_POLLS = int(os.getenv("GOR4_MAX_POLLS", "20"))
-GOR4_POLL_DELAY = env_float("GOR4_POLL_DELAY", 2.0)
+GOR4_MAX_POLLS = int(os.getenv("GOR4_MAX_POLLS", "40"))
+GOR4_POLL_DELAY = env_float("GOR4_POLL_DELAY", 0.5)
+GOR4_RESULT_TIMEOUT = env_float("GOR4_RESULT_TIMEOUT", 10.0)
 GOR4_HEADER = "Pos|AA|Prediction|P(H)|P(E)|P(C)"
 GOR4_JOB_REGEX = re.compile(r"/tmp/([a-f0-9]+)\.gor4")
 
@@ -198,15 +205,49 @@ def clean_protein_sequence(seq):
 
 def _gor4_wait_for_file(url, binary=True):
     retries = max(int(GOR4_MAX_POLLS), 1)
-    for _ in range(retries):
+    for attempt in range(retries):
         try:
-            resp = requests.get(url, timeout=60)
+            resp = requests.get(url, timeout=GOR4_RESULT_TIMEOUT)
             if resp.status_code == 200 and resp.content:
                 return resp.content if binary else resp.text
         except Exception:
             pass
-        time.sleep(GOR4_POLL_DELAY)
+        if attempt < retries - 1:
+            time.sleep(GOR4_POLL_DELAY)
     return None
+
+
+def _wait_for_phobius(job_id: str):
+    status_url = f"{PHOBIUS_BASE}/status/{job_id}"
+    deadline = time.time() + PHOBIUS_MAX_WAIT
+    last_error = None
+    while time.time() < deadline:
+        try:
+            resp = requests.get(status_url, timeout=PHOBIUS_STATUS_TIMEOUT)
+            resp.raise_for_status()
+            status = (resp.text or "").strip().upper()
+            if status == "FINISHED":
+                return True
+            if status == "ERROR":
+                raise RuntimeError("Phobius job failed")
+        except Exception as exc:
+            last_error = exc
+        time.sleep(PHOBIUS_POLL_INTERVAL)
+    raise TimeoutError(f"Phobius job {job_id} timed out: {last_error or 'no status response'}")
+
+
+def _fetch_phobius_artifact(url: str, binary: bool = True):
+    retries = max(PHOBIUS_RESULT_RETRIES, 1)
+    for attempt in range(retries):
+        try:
+            resp = requests.get(url, timeout=PHOBIUS_RESULT_TIMEOUT)
+            if resp.status_code == 200 and resp.content:
+                return resp.content if binary else resp.text
+        except Exception:
+            pass
+        if attempt < retries - 1:
+            time.sleep(PHOBIUS_RESULT_DELAY)
+    raise TimeoutError(f"Phobius artifact not ready at {url}")
 
 
 def predict_secondary_structure_gor4(seq, gene_dir=None, gene_id=None):
@@ -1109,24 +1150,26 @@ else:
                                     job_id = ph_resp.text.strip()
                                     print(f"    Phobius job submitted: {job_id}")
 
-                                    st_resp = requests.get(f"{PHOBIUS_BASE}/status/{job_id}", timeout=30)
-                                    st_resp.raise_for_status()
-                                    status = st_resp.text.strip()
-                                    print(f"    Phobius status: {status}; waiting 4s before fetch")
-                                    time.sleep(4)
+                                    try:
+                                        _wait_for_phobius(job_id)
+                                        print("    Phobius status: FINISHED; fetching outputs")
+                                    except Exception as wait_exc:
+                                        print(f"    Phobius polling failed: {wait_exc}")
+                                        raise
 
                                     out_txt_url = f"{PHOBIUS_BASE}/result/{job_id}/out"
                                     out_png_url = f"{PHOBIUS_BASE}/result/{job_id}/visual-png"
 
-                                    r_txt = requests.get(out_txt_url, timeout=60)
-                                    r_txt.raise_for_status()
+                                    txt_bytes = _fetch_phobius_artifact(out_txt_url, binary=True)
                                     with open(tm_txt, "wb") as f_txt:
-                                        f_txt.write(r_txt.content)
+                                        f_txt.write(txt_bytes)
 
-                                    r_png = requests.get(out_png_url, timeout=60)
-                                    if r_png.status_code == 200 and r_png.content:
+                                    try:
+                                        png_bytes = _fetch_phobius_artifact(out_png_url, binary=True)
                                         with open(tm_png, "wb") as f_png:
-                                            f_png.write(r_png.content)
+                                            f_png.write(png_bytes)
+                                    except TimeoutError:
+                                        pass
                                     status_parts.append("PHOBIUS")
                                 except Exception as exc:
                                     print(f"    Phobius failed: {exc}")
