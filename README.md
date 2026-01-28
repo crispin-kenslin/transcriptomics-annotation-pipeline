@@ -1,4 +1,4 @@
-# Transcriptomics Annotation Platform — Hosted Web Experience
+# Transcriptomics Annotation Pipeline
 
 This repository powers a production-grade transcriptomics web portal designed for browser-first use. Researchers upload GEO-style differential expression files, launch automated annotation, and explore richly visualized gene dossiers without installing local software. The platform orchestrates downstream services (UniProt, Ensembl, STRING, KEGG, EggNOG, InterPro, Phobius, GOR4, AlphaSync) and delivers curated dashboards, tables, and export-ready bundles.
 
