@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Species Registry{% endblock %}
+{% block content %}
+<section class="card reveal-up">
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Registry</p>
+            <h2>Supported plants</h2>
+            <p class="lede">Each tile introduces the common name, registry key, and the STRING / UniProt identifiers the pipeline uses.</p>
+        </div>
+    </div>
+    <!-- Species tile imagery target: 480px × 320px -->
+    <div class="species-gallery">
+        {% for opt in species_options %}
+        <article class="species-card">
+            <figure class="species-figure">
+                <img src="/static/media/images/species/{{ opt.key }}.png" alt="{{ opt.display_name }} reference" loading="lazy" onerror="this.onerror=null; this.src='/static/media/images/species-placeholder.svg';">
+                <figcaption class="hint">Place imagery at /static/media/images/species/{{ opt.key }}.png</figcaption>
+            </figure>
+            <div class="species-meta">
+                <h3>{{ opt.display_name }}</h3>
+                <p class="hint"><em>{{ opt.scientific_name }}</em></p>
+                <p class="hint">Key · {{ opt.key }}</p>
+                <p class="hint">ID: {{ opt.string_species_id }}</p>
+            </div>
+        </article>
+        {% endfor %}
+    </div>
+</section>
+
+<section class="card reveal-up ecosystem">
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Reference stack</p>
+            <h2>How auto detection routes requests</h2>
+            <p class="lede">Once TAP detects the species, every downstream API call is scoped—UniProt search filters by organism, STRING fetches the matching taxon, and KEGG pulls the exact KO mappings.</p>
+        </div>
+    </div>
+    <div class="reference-grid">
+        <div class="reference-tile">
+            <h3>UniProt</h3>
+            <p class="hint">Species key → UniProt taxon ID ensures search queries stay tight.</p>
+        </div>
+        <div class="reference-tile">
+            <h3>STRING</h3>
+            <p class="hint">STRING species IDs deliver contextual SVGs plus TSV edge lists.</p>
+        </div>
+        <div class="reference-tile">
+            <h3>KEGG & EggNOG</h3>
+            <p class="hint">Consistent species metadata keeps GO splits and pathways aligned.</p>
+        </div>
+    </div>
+</section>
+{% endblock %}

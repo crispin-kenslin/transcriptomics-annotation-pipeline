@@ -1,0 +1,17 @@
+<svg width="600" height="360" viewBox="0 0 600 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Plant imagery placeholder">
+  <defs>
+    <linearGradient id="leaf" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e5ffe4" />
+      <stop offset="100%" stop-color="#b7f5c8" />
+    </linearGradient>
+  </defs>
+  <rect width="600" height="360" rx="32" fill="url(#leaf)" />
+  <g fill="none" stroke="#5e9f5c" stroke-width="3" opacity="0.55">
+    <path d="M80 300 C120 200 200 220 230 120" />
+    <path d="M180 320 C220 240 300 240 330 140" />
+    <path d="M280 300 C320 210 400 210 430 120" />
+    <path d="M380 330 C420 250 500 250 530 150" />
+  </g>
+  <text x="50%" y="170" text-anchor="middle" font-family="'IBM Plex Sans', Arial, sans-serif" font-size="32" fill="#1b4c2a">Plant Imagery</text>
+  <text x="50%" y="210" text-anchor="middle" font-family="'IBM Plex Sans', Arial, sans-serif" font-size="18" fill="#1b4c2a" opacity="0.8">Replace with greenhouse or vine photo</text>
+</svg>

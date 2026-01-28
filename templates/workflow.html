@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Workflow{% endblock %}
+{% block content %}
+<section class="hero hero--sunlit reveal-up">
+    <div class="hero-copy">
+        <p class="eyebrow">Process</p>
+        <h1>From upload to Dash</h1>
+        <p class="lede">Each run streams through FastAPI → TAP core → Dash on port 8050, mirroring the way STIFDB exposes curated outcomes.</p>
+        <div class="actions" style="margin-top:16px;">
+            <a class="btn primary" href="{{ request.url_for('run_launcher') }}">Launch a run</a>
+            <a class="btn secondary" href="{{ request.url_for('help_page') }}">Read help</a>
+        </div>
+    </div>
+    <div class="media-slot" data-media="/static/media/images/workflow.jpg">
+        <span class="media-hint">Place a workflow figure at static/media/images/workflow.jpg.</span>
+    </div>
+</section>
+
+<section class="card reveal-up">
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Timeline</p>
+            <h2>Four clean phases</h2>
+            <p class="lede">Every stage mirrors STIFDB’s structured, publication-grade cadence.</p>
+        </div>
+    </div>
+    <div class="timeline">
+        <div class="timeline-step">
+            <span>1</span>
+            <div>
+                <strong>Upload CSV & map columns</strong>
+                <p class="hint">Gene IDs, log2FC, and p-values are required. TAP captures any additional metadata for downstream context.</p>
+            </div>
+        </div>
+        <div class="timeline-step">
+            <span>2</span>
+            <div>
+                <strong>Auto species detection</strong>
+                <p class="hint">Regex heuristics match locus prefixes to the registry. Override when working with custom organisms.</p>
+            </div>
+        </div>
+        <div class="timeline-step">
+            <span>3</span>
+            <div>
+                <strong>Annotation sweep</strong>
+                <p class="hint">UniProt, STRING, KEGG, InterPro, EggNOG, AlphaFold, PSI-BLAST, Phobius, and GOR4 run sequentially with caching.</p>
+            </div>
+        </div>
+        <div class="timeline-step">
+            <span>4</span>
+            <div>
+                <strong>Dash on port 8050</strong>
+                <p class="hint">Volcano plots, Cytoscape networks, PSI-BLAST buttons, and download bundles appear once processing completes.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="card reveal-up">
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Tips</p>
+            <h2>Keep reviewers happy</h2>
+            <p class="lede">Use the pointers below to keep every run reproducible.</p>
+        </div>
+    </div>
+    <div class="insight-grid">
+        <div class="insight-card">
+            <h3>Adj p-values</h3>
+            <span>Provide your own FDR column or let TAP compute BH corrections per run.</span>
+        </div>
+        <div class="insight-card">
+            <h3>Species overrides</h3>
+            <span>Pin a registry entry whenever locus prefixes are atypical.</span>
+        </div>
+        <div class="insight-card">
+            <h3>STRING zoom</h3>
+            <span>Use the zoom controls on the Results page to inspect dense components.</span>
+        </div>
+        <div class="insight-card">
+            <h3>Downloads</h3>
+            <span>Grab CSVs, SVGs, FASTA/PDB assets, and PSI-BLAST helpers from the downloads hub.</span>
+        </div>
+    </div>
+</section>
+{% endblock %}

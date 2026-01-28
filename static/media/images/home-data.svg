@@ -1,0 +1,22 @@
+<svg width="600" height="360" viewBox="0 0 600 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Data visualization placeholder">
+  <defs>
+    <linearGradient id="grid" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#e3f2ff" />
+      <stop offset="100%" stop-color="#c8e7ff" />
+    </linearGradient>
+  </defs>
+  <rect width="600" height="360" rx="32" fill="url(#grid)" />
+  <g stroke="#0f6b8a" stroke-width="2" opacity="0.4">
+      <path d="M80 260 L160 180 L240 220 L320 140 L400 200 L480 120" />
+      <path d="M80 300 L160 240 L240 260 L320 200 L400 240 L480 180" />
+  </g>
+  <g fill="#0f6b8a" opacity="0.7">
+      <circle cx="160" cy="180" r="10" />
+      <circle cx="240" cy="220" r="10" />
+      <circle cx="320" cy="140" r="10" />
+      <circle cx="400" cy="200" r="10" />
+      <circle cx="480" cy="120" r="10" />
+  </g>
+  <text x="50%" y="170" text-anchor="middle" font-family="'IBM Plex Sans', Arial, sans-serif" font-size="30" fill="#0f3152">Data & Analytics</text>
+  <text x="50%" y="210" text-anchor="middle" font-family="'IBM Plex Sans', Arial, sans-serif" font-size="18" fill="#0f3152" opacity="0.85">Replace with charts or dashboards</text>
+</svg>

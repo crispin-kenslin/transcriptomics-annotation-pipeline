@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Help{% endblock %}
 {% block content %}
-<section class="card">
+<section class="help-page">
     <div class="card-header">
         <div>
             <p class="eyebrow">Support</p>
@@ -177,17 +177,45 @@
 </section>
 
 <script>
-    // Smooth-scroll nav and open the matching accordion section
-    document.querySelectorAll('.help-nav a').forEach(link => {
+    const navLinks = Array.from(document.querySelectorAll('.help-nav a'));
+    const sections = navLinks
+        .map(link => document.querySelector(link.getAttribute('href')))
+        .filter(Boolean);
+
+    sections.forEach(section => { section.open = true; });
+
+    const setActive = (id) => {
+        navLinks.forEach(link => {
+            link.classList.toggle('is-active', link.getAttribute('href') === `#${id}`);
+        });
+    };
+
+    navLinks.forEach(link => {
         link.addEventListener('click', evt => {
             evt.preventDefault();
             const targetId = link.getAttribute('href');
             const panel = document.querySelector(targetId);
-            if (panel) {
-                panel.open = true;
-                panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }
+            if (!panel) return;
+            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            setActive(panel.id);
         });
     });
+
+    if (sections.length) {
+        const observer = new IntersectionObserver(entries => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    setActive(entry.target.id);
+                }
+            });
+        }, {
+            root: null,
+            rootMargin: '-40% 0px -50% 0px',
+            threshold: 0.1
+        });
+
+        sections.forEach(section => observer.observe(section));
+        setActive(sections[0].id);
+    }
 </script>
 {% endblock %}

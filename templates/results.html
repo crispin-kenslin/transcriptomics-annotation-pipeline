@@ -1,29 +1,50 @@
 {% extends "base.html" %}
 {% block title %}Results {{ run_id }}{% endblock %}
 {% block content %}
-<section class="card">
+{% set species = species_params or run.params %}
+<section class="card reveal-up" id="volcano-section">
     <div class="card-header">
         <div>
             <p class="eyebrow">Run {{ run_id }}</p>
             <h1>Results overview</h1>
-            <p class="lede">Explore the volcano plot and gene annotations. Downloads and tables are in a separate tab.</p>
+            <p class="lede">Outcomes follow the polish of UniProt &amp; InterPro dashboards: species chips, curated stats, and download paths stay in view.</p>
         </div>
         <div class="pill subtle">Status: {{ run.status }}</div>
     </div>
-    <div class="grid stats">
-        <div class="field"><p class="hint">Job name</p><p class="strong">{{ run_job_name or run.name or run.params.job_name or '—' }}</p></div>
-        <div class="field"><p class="hint">Total genes</p><p class="strong">{{ summary.total_genes | default('0') }}</p></div>
-        <div class="field"><p class="hint">Upregulated</p><p class="strong" style="color:#16a34a;">{{ summary.upregulated_count | default('0') }}</p></div>
-        <div class="field"><p class="hint">Downregulated</p><p class="strong" style="color:#dc2626;">{{ summary.downregulated_count | default('0') }}</p></div>
-        <div class="field"><p class="hint">log2FC threshold</p><p class="strong">{{ run.params.log2fc_threshold }}</p></div>
-        <div class="field"><p class="hint">p-value threshold</p><p class="strong">{{ run.params.pvalue_threshold }}</p></div>
-        <div class="field"><p class="hint">Distance percentile</p><p class="strong">{{ run.params.distance_percentile }}</p></div>
-        <div class="field"><p class="hint">Runtime</p><p class="strong">{{ run_duration or '—' }}</p></div>
-        <div class="field"><p class="hint">FDR</p><p class="strong">{{ 'On' if run.params.use_fdr else 'Off' }}</p></div>
+    <div class="status-grid">
+        <div class="status-card">
+            <p class="hint">Species</p>
+            <p class="strong">{{ species.species_label or 'Auto detection' }}</p>
+            <p class="hint">Detection: {{ species.species_detection or 'pending' }}</p>
+        </div>
+        <div class="status-card">
+            <p class="hint">STRING taxon</p>
+            <p class="strong">{{ species.string_species_id or '—' }}</p>
+            <p class="hint">UniProt taxon {{ species.uniprot_tax_id or '—' }}</p>
+        </div>
+        <div class="status-card">
+            <p class="hint">Job name</p>
+            <p class="strong">{{ run_job_name or run.name or run.params.job_name or '—' }}</p>
+            <p class="hint">Started {{ run.created_at.strftime('%Y-%m-%d %H:%M') }} UTC</p>
+        </div>
+    </div>
+    <div class="stat-board">
+        <div class="stat-chip"><p class="hint">Total genes</p><h3>{{ summary.total_genes | default('0') }}</h3><span>Cleaned rows: {{ species.cleaned_rows or '—' }}</span></div>
+        <div class="stat-chip"><p class="hint">Upregulated</p><h3 style="color:#42a437;">{{ summary.upregulated_count | default('0') }}</h3><span>log2FC &gt; {{ run.params.log2fc_threshold }}</span></div>
+        <div class="stat-chip"><p class="hint">Downregulated</p><h3 style="color:#dc6755;">{{ summary.downregulated_count | default('0') }}</h3><span>log2FC &lt; -{{ run.params.log2fc_threshold }}</span></div>
+        <div class="stat-chip"><p class="hint">log2FC threshold</p><h3>{{ run.params.log2fc_threshold }}</h3><span>Adjust in run form</span></div>
+        <div class="stat-chip"><p class="hint">p-value threshold</p><h3>{{ run.params.pvalue_threshold }}</h3><span>Dash-line on volcano plot</span></div>
+        <div class="stat-chip"><p class="hint">Distance percentile</p><h3>{{ run.params.distance_percentile }}</h3><span>STRING edge pruning</span></div>
+        <div class="stat-chip"><p class="hint">Runtime</p><h3>{{ run_duration or '—' }}</h3><span>Compute window</span></div>
+        <div class="stat-chip"><p class="hint">FDR</p><h3>{{ 'On' if run.params.use_fdr else 'Off' }}</h3><span>Benjamini–Hochberg</span></div>
     </div>
 </section>
 
-<section class="card">
+<a class="floating-volcano-button" href="#volcano-plot" aria-label="Scroll to volcano plot" title="Volcano plot">
+<img src="/static/media/images/volcano-scroll.png" alt="Scroll back to Volcano plot">
+</a>
+
+<section class="card reveal-up" id="gene-detail">
     <div class="card-header">
         <div>
             <p class="eyebrow">Differential expression</p>
@@ -36,18 +57,18 @@
         <input id="gene-search" type="text" placeholder="Start typing to filter (live)">
     </div>
     <div id="gene-search-results" class="search-results"></div>
-    <div id="volcano-plot" style="height:700px; width:100%;"></div>
+    <div id="volcano-plot"></div>
     {% if networks %}
     <div class="table-block" style="margin-top:12px;">
         <h3>STRING networks</h3>
         <p class="hint">STRING network of the entire regulated genes.</p>
-        <div class="list">
+        <div class="string-pill-list">
             {% for net in networks %}
-            <div class="list-row">
-                <div>{{ net.label }}</div>
-                <div class="row-actions">
-                    <a class="link" href="{{ net.view_url }}" target="_blank" rel="noreferrer">View</a>
-                    <a class="link" href="{{ net.download_url }}" target="_blank" rel="noreferrer">Download</a>
+            <div class="string-pill {% if 'down' in (net.label | lower) %}string-pill--down{% else %}string-pill--up{% endif %}">
+                <span class="string-pill__label">{{ net.label }}</span>
+                <div class="string-pill__actions">
+                    <a class="btn secondary" href="{{ net.view_url }}" target="_blank" rel="noreferrer">View</a>
+                    <a class="btn" href="{{ net.download_url }}" target="_blank" rel="noreferrer">Download</a>
                 </div>
             </div>
             {% endfor %}
@@ -56,7 +77,7 @@
     {% endif %}
 </section>
 
-<section class="card">
+<section class="card reveal-up">
     <div class="card-header">
         <div>
             <p class="eyebrow">Gene detail</p>
@@ -69,7 +90,7 @@
     </div>
 </section>
 
-<section class="card">
+<section class="card reveal-up">
     <div class="card-header">
         <div>
             <p class="eyebrow">Outputs</p>
@@ -81,6 +102,7 @@
         <a class="btn secondary" href="/runs/{{ run_id }}/downloads" target="_blank">Open downloads & tables</a>
         <a class="btn" href="/runs/{{ run_id }}/download-zip">Download all output files (zip)</a>
     </div>
+    <div class="callout" style="margin-top:16px;">Downloads reflect the same taxonomy-first order you see on UniProt or InterPro: annotations, GO splits, domains, STRING assets, and per-gene folders stay separated for clean archival.</div>
 </section>
 
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
@@ -97,6 +119,7 @@
     const searchResults = document.getElementById('gene-search-results');
     let volcanoPoints = [];
     let searchIndex = [];
+    let cyInstance = null;
 
     function truncateText(text, max = 140) {
         if (!text) return '';
@@ -136,6 +159,38 @@
                 domains: p.domains || '',
                 fields
             };
+        });
+    }
+
+    function setZoomControlsEnabled(enabled) {
+        const controls = document.getElementById('cyto-controls');
+        if (!controls) return;
+        controls.classList.toggle('zoom-controls--disabled', !enabled);
+        controls.querySelectorAll('button').forEach(btn => {
+            btn.disabled = !enabled;
+        });
+    }
+
+    function setupZoomControls() {
+        const controls = document.getElementById('cyto-controls');
+        if (!controls) return;
+        controls.querySelectorAll('button').forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (!cyInstance) return;
+                const action = btn.getAttribute('data-zoom');
+                if (!action) return;
+                const current = cyInstance.zoom();
+                const maxZ = cyInstance.maxZoom ? cyInstance.maxZoom() : 4;
+                const minZ = cyInstance.minZoom ? cyInstance.minZoom() : 0.2;
+                if (action === 'in') {
+                    cyInstance.zoom({ level: Math.min(current * 1.2, maxZ) });
+                } else if (action === 'out') {
+                    cyInstance.zoom({ level: Math.max(current / 1.2, minZ) });
+                } else if (action === 'reset') {
+                    cyInstance.fit(undefined, 50);
+                    cyInstance.center();
+                }
+            });
         });
     }
 
@@ -265,8 +320,11 @@
 
     function renderCytoscape(edges, queryId) {
         const cyDiv = document.getElementById('cyto');
+        if (!cyDiv) return;
         if (!edges || !edges.length) {
-            cyDiv.innerHTML = '<p class="hint">No STRING interactions available.</p>';
+            cyDiv.innerHTML = '<p class="hint" style="padding:12px;">No STRING interactions available.</p>';
+            cyInstance = null;
+            setZoomControlsEnabled(false);
             return;
         }
         const nodes = new Map();
@@ -321,6 +379,8 @@
                 { selector: 'edge', style: { 'line-color': '#000000', 'width': 2, 'curve-style': 'bezier' } }
             ]
         });
+        cyInstance = cy;
+        setZoomControlsEnabled(true);
         cy.ready(() => {
             cy.fit();
         });
@@ -486,11 +546,18 @@
 
             <h3>STRING network</h3>
             <div class="string-grid">
-                ${detail.string_svg_url ? `<div class="string-panel"><img src="${detail.string_svg_url}" class="string-img"/></div>` : '<p class="hint">No STRING SVG available.</p>'}
-                <div id="cyto" class="string-panel" style="border:1px solid var(--border); border-radius:8px;"></div>
+                ${detail.string_svg_url ? `<div class="string-panel string-panel--svg"><img src="${detail.string_svg_url}" class="string-img"/></div>` : '<div class="string-panel string-panel--placeholder"><p class="hint">No STRING SVG available.</p></div>'}
+                <div class="string-panel string-panel--cyto">
+                    <div class="zoom-controls" id="cyto-controls">
+                        <button type="button" data-zoom="in">＋</button>
+                        <button type="button" data-zoom="out">－</button>
+                        <button type="button" data-zoom="reset">Reset</button>
+                    </div>
+                    <div id="cyto"></div>
+                </div>
             </div>
-            <p id="cy-legend" class="hint" style="margin-top:6px;">Query node in blue (if present in network); other nodes grouped by connected component color.</p>
-            <p class="hint">Click any node to open it on UniProt.</p>
+            <p id="cy-legend" class="hint" style="margin-top:6px;">Use the zoom controls or scroll to inspect dense STRING components. Query nodes render in blue.</p>
+            <p class="hint">Click any node to open its UniProt entry in a new tab.</p>
             ${Array.isArray(detail.string_edges) && detail.string_edges.length ? `
                 <h4>Interaction scores</h4>
                 <table class="data-table"><thead><tr><th>Source</th><th>Target</th><th>Score</th></tr></thead><tbody>
@@ -504,7 +571,14 @@
         renderCytoscape(detail.string_edges, queryId);
         renderNGL(detail.pdb);
         renderESM(detail.rapid_fold_pdb);
-        genePanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        const geneTarget = document.getElementById('gene-panel');
+        if (geneTarget) {
+            requestAnimationFrame(() => {
+                const offset = 190;
+                const top = geneTarget.getBoundingClientRect().top + window.scrollY - offset;
+                window.scrollTo({ top, behavior: 'smooth' });
+            });
+        }
     }
 
     async function loadGene(geneId) {
@@ -548,5 +622,7 @@
     }
 
     loadVolcano();
+    setupZoomControls();
+    setZoomControlsEnabled(false);
 </script>
 {% endblock %}

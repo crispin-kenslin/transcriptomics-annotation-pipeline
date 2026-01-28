@@ -12,15 +12,92 @@
 </head>
 <body>
     <header class="topbar">
-        <div class="brand">Transcriptomics annotation pipeline</div>
+        <a class="brand brand-link brand-custom" href="{{ request.url_for('home') }}" title="Home">
+            <img src="/static/media/images/site-logo-placeholder.png" alt="Logo" class="brand-logo brand-logo--custom" loading="lazy" />
+            <div class="brand-copy">
+                <strong>Transcriptomics Annotation Pipeline</strong>
+                <span>Annotate Genes in a single run</span>
+            </div>
+        </a>
         <nav class="nav-links">
-            <a href="/">Home</a>
-            <a href="/help">Help</a>
-            <a href="https://github.com/crispin-kenslin/transcriptomics-annotation-pipeline" target="_blank" rel="noreferrer">Docs</a>
+            <a href="{{ request.url_for('home') }}">Home</a>
+            <a href="{{ request.url_for('run_launcher') }}">Run</a>
+            <a href="{{ request.url_for('history_page') }}">History</a>
+            <a href="{{ request.url_for('species_page') }}">Species</a>
+            <a href="{{ request.url_for('help_page') }}">Help</a>
         </nav>
+        <div class="topbar-actions">
+            <a class="caps-dock" href="https://caps.ncbs.res.in/" title="CAPS reference site" target="_blank" rel="noopener noreferrer">
+                <img src="/static/media/images/caps-logo.webp" alt="CAPS logo" class="caps-mark" loading="lazy" />
+            </a>
+        </div>
     </header>
     <main class="page">
         {% block content %}{% endblock %}
     </main>
+    <script>
+        (function() {
+            const revealTargets = document.querySelectorAll('.card, .hero, .reveal-up');
+            if (typeof IntersectionObserver !== 'undefined') {
+                const observer = new IntersectionObserver(entries => {
+                    entries.forEach(entry => {
+                        if (entry.isIntersecting) {
+                            entry.target.classList.add('is-visible');
+                            observer.unobserve(entry.target);
+                        }
+                    });
+                }, { threshold: 0.12 });
+                revealTargets.forEach(el => observer.observe(el));
+            } else {
+                revealTargets.forEach(el => el.classList.add('is-visible'));
+            }
+
+            document.querySelectorAll('[data-media]').forEach(slot => {
+                const url = slot.getAttribute('data-media');
+                if (!url) return;
+                fetch(url, { method: 'HEAD' })
+                    .then(resp => {
+                        if (resp.ok) {
+                            slot.style.backgroundImage = `url(${url})`;
+                            slot.classList.add('media-slot--active');
+                        } else {
+                            slot.classList.remove('media-slot--active');
+                        }
+                    })
+                    .catch(() => {
+                        slot.classList.remove('media-slot--active');
+                    });
+            });
+
+            document.querySelectorAll('video[data-src]').forEach(video => {
+                const src = video.getAttribute('data-src');
+                if (!src) return;
+                video.addEventListener('loadeddata', () => {
+                    const slot = video.closest('.media-slot');
+                    if (slot) { slot.classList.add('media-slot--active'); }
+                    const hint = slot?.querySelector('.media-hint');
+                    if (hint) { hint.remove(); }
+                });
+                fetch(src, { method: 'HEAD' })
+                    .then(resp => {
+                        if (resp.ok) {
+                            video.src = src;
+                            video.removeAttribute('data-src');
+                        } else {
+                            const fallback = video.closest('.media-slot');
+                            if (fallback) {
+                                fallback.innerHTML = `<span class="media-hint">Place video at ${src}</span>`;
+                            }
+                        }
+                    })
+                    .catch(() => {
+                        const fallback = video.closest('.media-slot');
+                        if (fallback) {
+                            fallback.innerHTML = `<span class="media-hint">Place video at ${src}</span>`;
+                        }
+                    });
+            });
+        })();
+    </script>
 </body>
 </html>

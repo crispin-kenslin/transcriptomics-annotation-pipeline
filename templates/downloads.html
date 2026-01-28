@@ -1,42 +1,45 @@
 {% extends "base.html" %}
 {% block title %}Downloads {{ run.id }}{% endblock %}
 {% block content %}
-<section class="card">
+<section class="card reveal-up">
     <div class="card-header">
         <div>
             <p class="eyebrow">Run {{ run.id }}</p>
             <h1>Downloads & tables</h1>
-            <p class="lede">All CSV artifacts and quick previews.</p>
+            <p class="lede">Artifacts are grouped the way UniProt/InterPro organize exports—annotations, networks, and bundles stay distinct.</p>
         </div>
     </div>
     <div class="actions">
         <a class="btn" href="/runs/{{ run.id }}/download-zip">Download all (zip)</a>
     </div>
-    <div class="list">
+    {% if downloads or networks %}
+    <div class="downloads-grid" style="margin-top:18px;">
         {% for f in downloads %}
-        <div class="list-row">
-            <div>{{ f.label }}</div>
-            <div><a class="link" href="{{ f.path }}" download>Download</a></div>
+        <div class="download-card">
+            <h3>{{ f.label }}</h3>
+            <span>CSV asset</span>
+            <a class="btn secondary" href="{{ f.path }}" download>Download</a>
         </div>
         {% endfor %}
         {% if networks %}
             {% for net in networks %}
-            <div class="list-row">
-                <div>{{ net.label }}</div>
-                <div class="row-actions">
-                    <a class="link" href="{{ net.view_url }}" target="_blank">View</a>
-                    <a class="link" href="{{ net.download_url }}" download>Download</a>
+            <div class="download-card">
+                <h3>{{ net.label }}</h3>
+                <span>STRING SVG</span>
+                <div class="actions">
+                    <a class="btn secondary" href="{{ net.view_url }}" target="_blank">View</a>
+                    <a class="btn secondary" href="{{ net.download_url }}" download>Download</a>
                 </div>
             </div>
             {% endfor %}
         {% endif %}
-        {% if not downloads and not networks %}
-        <p class="hint">No artifacts found.</p>
-        {% endif %}
     </div>
+    {% else %}
+    <p class="hint">No artifacts found.</p>
+    {% endif %}
 </section>
 
-<section class="card">
+<section class="card reveal-up">
     <div class="card-header">
         <div>
             <p class="eyebrow">Data preview</p>

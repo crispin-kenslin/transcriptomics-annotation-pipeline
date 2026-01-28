@@ -64,6 +64,13 @@ PVALUE_THRESHOLD = env_float("PVALUE_THRESHOLD", DEFAULT_PVALUE_THRESHOLD)
 DISTANCE_PERCENTILE = env_float("DISTANCE_PERCENTILE", DEFAULT_DISTANCE_PERCENTILE)
 USE_ADJUSTED_PVALUE = env_bool("USE_ADJUSTED_PVALUE", False)
 RUN_DASH_SERVER = env_bool("RUN_DASH_SERVER", True)
+PLANT_SPECIES_KEY = os.getenv("PLANT_SPECIES_KEY", "rice")
+PLANT_SPECIES_LABEL = os.getenv("PLANT_SPECIES_LABEL", "Rice")
+PLANT_SPECIES_SHORT_NAME = os.getenv("PLANT_SPECIES_SHORT_NAME", PLANT_SPECIES_LABEL)
+SPECIES_SCIENTIFIC_NAME = os.getenv(
+    "SPECIES_SCIENTIFIC_NAME", PLANT_SPECIES_LABEL
+)
+UNIPROT_TAX_ID = os.getenv("UNIPROT_TAX_ID", "39947")
 
 # API Endpoints
 UNIPROT_SEARCH = "https://rest.uniprot.org/uniprotkb/search"
@@ -72,7 +79,7 @@ ALPHAFOLD_BASE = "https://alphafold.ebi.ac.uk/files"
 ALPHAFOLD_API = "https://alphafold.ebi.ac.uk/api/prediction"
 ENSEMBL_API = "https://rest.ensembl.org"
 STRING_API = "https://string-db.org/api"
-STRING_SPECIES = 39947
+STRING_SPECIES = int(os.getenv("STRING_SPECIES", "39947"))
 EGGNOG_API = "http://eggnogapi5.embl.de/nog_data/json"
 INTERPRO_API = "https://www.ebi.ac.uk/interpro/api/entry/interpro"
 KEGG_API = "https://rest.kegg.jp"
@@ -103,6 +110,10 @@ for d in [OUTPUT_DIR, CACHE_DIR, GENE_DIR, UP_GENES_DIR, DOWN_GENES_DIR,
 print("=" * 60)
 print("TRANSCRIPTOMICS ANALYSIS PIPELINE - UNIFIED VERSION")
 print("=" * 60)
+print(
+    f"Active species: {PLANT_SPECIES_LABEL} ({SPECIES_SCIENTIFIC_NAME}) | "
+    f"UniProt tax ID: {UNIPROT_TAX_ID} | STRING species: {STRING_SPECIES}"
+)
 
 # ==========================================================
 # CACHING SYSTEM
@@ -507,15 +518,29 @@ else:
     if df.empty:
         raise ValueError("No valid data after low-expression filtering")
 
-    # Calculate FDR-adjusted p-values for all genes
-    _, adj_pvals, _, _ = multipletests(df["p_value"], method='fdr_bh')
-    df["adj_p_value"] = adj_pvals
+    existing_adj = "adj_p_value" in df.columns
+    if existing_adj:
+        df["adj_p_value"] = pd.to_numeric(df["adj_p_value"], errors="coerce")
+        invalid_adj = df["adj_p_value"].isna() | (df["adj_p_value"] <= 0)
+    else:
+        invalid_adj = pd.Series(True, index=df.index)
+
+    if (not existing_adj) or invalid_adj.any():
+        _, adj_pvals, _, _ = multipletests(df["p_value"], method='fdr_bh')
+        adj_series = pd.Series(adj_pvals, index=df.index)
+        if existing_adj:
+            df.loc[invalid_adj, "adj_p_value"] = adj_series.loc[invalid_adj]
+        else:
+            df["adj_p_value"] = adj_series
+
+    df["adj_p_value"] = df["adj_p_value"].clip(lower=1e-300)
     # Save upload.csv with FDR column for all genes
     upload_path = os.path.join(OUTPUT_DIR, "upload.csv")
     df_upload = df.copy()
     df_upload.to_csv(upload_path, index=False)
 
     pval_column = "adj_p_value" if USE_ADJUSTED_PVALUE else "p_value"
+    df[pval_column] = df[pval_column].clip(lower=1e-300)
     df["neg_log10_p"] = -np.log10(df[pval_column])
     df["euclidean_distance"] = np.sqrt(df["log2FC"]**2 + df["neg_log10_p"]**2)
 
@@ -546,10 +571,11 @@ def uniprot_search(gene_id, cache):
     if gene_id in cache:
         return cache[gene_id]
     
+    tax_filter = f"(organism_id:{UNIPROT_TAX_ID})"
     queries = [
-        f"(gene_exact:{gene_id}) AND (organism_id:39947)",
-        f"(gene:{gene_id}) AND (organism_id:39947)",
-        f"{gene_id} AND (organism_id:39947)"
+        f"(gene_exact:{gene_id}) AND {tax_filter}",
+        f"(gene:{gene_id}) AND {tax_filter}",
+        f"{gene_id} AND {tax_filter}"
     ]
     
     for query in queries:
@@ -579,12 +605,13 @@ def ensembl_lookup(gene_id):
     r = safe_request(f"{ENSEMBL_API}/lookup/id/{gene_id}?expand=1", timeout=30)
     return safe_json(r)
 
-def get_string_tsv(gene_id, species=39947):
+def get_string_tsv(gene_id, species=None):
+    species = species or STRING_SPECIES
     cache_key = f"{gene_id}_{species}"
     if cache_key in string_tsv_cache:
         return string_tsv_cache[cache_key]
 
-    url = f"{STRING_API}/tsv/network?identifiers={gene_id}&species={STRING_SPECIES}"
+    url = f"{STRING_API}/tsv/network?identifiers={gene_id}&species={species}"
     params = {"required_score": 400}
     r_net = safe_request(url, params=params, timeout=30)
 
@@ -809,8 +836,9 @@ def get_alphafold_info(uniprot_id):
     alphafold_cache[cache_key] = None
     return None
 
-def get_string_network_cytoscape(gene_id, species=39947):
+def get_string_network_cytoscape(gene_id, species=None):
     """Get STRING network data formatted for Cytoscape"""
+    species = species or STRING_SPECIES
     cache_key = f"{gene_id}_{species}"
     if cache_key in string_cytoscape_cache:
         return string_cytoscape_cache[cache_key]
@@ -1648,7 +1676,11 @@ fig.add_vline(x=-LOG2FC_THRESHOLD, line_dash="dash", line_color="black", opacity
 fig.add_hline(y=-np.log10(PVALUE_THRESHOLD), line_dash="dash", line_color="black", opacity=0.5)
 
 fig.update_layout(
-    title={"text": "Interactive Volcano Plot - Rice Gene Expression", "x": 0.5, "xanchor": "center"},
+    title={
+        "text": f"Interactive Volcano Plot - {PLANT_SPECIES_LABEL} Gene Expression",
+        "x": 0.5,
+        "xanchor": "center",
+    },
     xaxis_title="log2 Fold Change",
     yaxis_title=f"-log10 ({'FDR-adjusted' if USE_ADJUSTED_PVALUE else 'raw'} p-value)",
     template="plotly_white",
@@ -1673,12 +1705,15 @@ else:
     pass
 
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
-app.title = "Transcriptomics Pipeline Server"
+app.title = f"{PLANT_SPECIES_SHORT_NAME} Transcriptomics Pipeline"
 app.config.suppress_callback_exceptions = True
 
 app.layout = dbc.Container([
-    html.H1("Rice Transcriptomics Analysis Pipeline", className="text-center my-4",
-            style={"color": "#2C3E50"}),
+    html.H1(
+        f"{PLANT_SPECIES_LABEL} Transcriptomics Analysis Pipeline",
+        className="text-center my-4",
+        style={"color": "#2C3E50"},
+    ),
     
     dbc.Row([
         dbc.Col(dbc.Card(dbc.CardBody([
@@ -2163,7 +2198,7 @@ if __name__ == "__main__" and RUN_DASH_SERVER:
     print("\n" + "=" * 60)
     print(" SERVER READY!")
     print("=" * 60 + "\n")
-    app.run(debug=True, use_reloader=False, host="127.0.0.1", port=8055)
+    app.run(debug=True, use_reloader=False, host="0.0.0.0", port=8050)
 elif __name__ == "__main__":
     # Dash UI skipped. Set RUN_DASH_SERVER=1 to launch the dashboard.
     pass

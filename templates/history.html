@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Run History{% endblock %}
+{% block content %}
+<section class="card reveal-up">
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Queue + archive</p>
+            <h2>All runs</h2>
+            <p class="lede">Track current jobs, stop a run if required, or reopen completed results.</p>
+        </div>
+    </div>
+    {% if runs %}
+    <div class="table">
+        <div class="table-row table-head">
+            <div>ID</div>
+            <div>Name</div>
+            <div>Species</div>
+            <div>Status</div>
+            <div>Created (local)</div>
+            <div>Actions</div>
+        </div>
+        {% for r in runs %}
+        <div class="table-row">
+            <div>{{ r.id }}</div>
+            <div>{{ r.name or r.params.job_name or '—' }}</div>
+            <div>
+                <span class="pill subtle">{{ r.params.species_label or 'Auto' }}</span>
+                <span class="hint">{{ r.params.species_detection or '—' }}</span>
+            </div>
+            <div class="status {{ r.status }} {% if r.status in ['running','queued'] %}status-pulse{% endif %}">{{ r.status }}</div>
+            <div class="created-at" data-utc="{{ r.created_at.strftime('%Y-%m-%dT%H:%M:%SZ') }}">{{ r.created_at.strftime('%Y-%m-%d %H:%M') }} UTC</div>
+            <div class="row-actions">
+                <a href="/runs/{{ r.id }}/logs" class="link" target="_blank" rel="noreferrer">Log</a>
+                {% if r.status == "completed" %}
+                <a href="/runs/{{ r.id }}/results" class="link">Results</a>
+                {% endif %}
+                {% if r.status in ["queued", "running"] %}
+                <button type="button" class="link danger stop-run" data-run-id="{{ r.id }}">Stop</button>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="hint">No runs yet. Upload a CSV to see history populate.</p>
+    {% endif %}
+</section>
+
+<section class="card reveal-up" id="resume">
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Search runs</p>
+            <h2>Reopen specific run</h2>
+            <p class="lede">Enter the 8-character ID to jump directly to the results page.</p>
+        </div>
+    </div>
+    <form class="actions" id="resume-form">
+        <input id="resume-run-id" type="text" name="run_id" placeholder="Run code (e.g. 3f4b0315)" required style="flex:1; min-width:240px; padding:12px; border:1px solid var(--border); border-radius:10px; background:#fff; color:var(--text);">
+        <button class="btn secondary" type="submit">Open results</button>
+    </form>
+</section>
+
+<script>
+    document.querySelectorAll('.created-at').forEach(el => {
+        const utc = el.getAttribute('data-utc');
+        if (!utc) return;
+        const date = new Date(utc);
+        if (Number.isNaN(date.getTime())) return;
+        const opts = { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false };
+        el.textContent = date.toLocaleString(undefined, opts);
+        el.title = `UTC: ${utc}`;
+    });
+
+    document.querySelectorAll('.stop-run').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const runId = btn.getAttribute('data-run-id');
+            if (!runId) return;
+            if (!confirm(`Stop run ${runId}?`)) return;
+            btn.disabled = true;
+            btn.textContent = 'Stopping...';
+            try {
+                const res = await fetch(`/runs/${runId}/stop`, { method: 'POST' });
+                if (!res.ok) throw new Error('Request failed');
+                location.reload();
+            } catch (err) {
+                console.error(err);
+                btn.disabled = false;
+                btn.textContent = 'Stop';
+                alert('Failed to stop run.');
+            }
+        });
+    });
+
+    const resumeForm = document.getElementById('resume-form');
+    const resumeInput = document.getElementById('resume-run-id');
+    if (resumeForm && resumeInput) {
+        resumeForm.addEventListener('submit', evt => {
+            evt.preventDefault();
+            const runId = resumeInput.value.trim();
+            if (!runId) return;
+            window.location.href = `/runs/${encodeURIComponent(runId)}/results`;
+        });
+    }
+</script>
+{% endblock %}

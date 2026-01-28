@@ -1,0 +1,16 @@
+<svg width="480" height="320" viewBox="0 0 480 320" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="leafGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#d9f2d9" />
+      <stop offset="100%" stop-color="#93cfa3" />
+    </linearGradient>
+  </defs>
+  <rect width="480" height="320" rx="28" fill="url(#leafGradient)" />
+  <g fill="#1f4e2e" opacity="0.65">
+    <path d="M110 220c40-70 120-90 180-110 60-20 120-50 170-110-20 120-60 190-150 230-70 30-140 40-200-10z" />
+    <path d="M70 250c45-40 110-35 165-45 55-10 110-35 165-90-35 90-75 145-150 165-55 15-120 5-180-30z" opacity="0.6" />
+  </g>
+  <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-family="'IBM Plex Sans', sans-serif" font-size="20" fill="#0f3a22" opacity="0.7">
+    Drop 480×320 plant photo
+  </text>
+</svg>

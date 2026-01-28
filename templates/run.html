@@ -1,14 +1,18 @@
 {% extends "base.html" %}
 {% block title %}Run {{ run.id }}{% endblock %}
 {% block content %}
-<section class="card">
+{% set species = species_params or run.params %}
+<section class="card reveal-up" id="run-status">
     <div class="card-header">
         <div>
             <p class="eyebrow">Run {{ run.id }}</p>
-            <h1>Status: <span id="status-text" class="status {{ run.status }}">{{ run.status }}</span></h1>
-            <p class="lede">This page refreshes automatically.</p>
+            <h1>Status: <span id="status-text" class="status {{ run.status }} {% if run.status in ['running','queued'] %}status-pulse{% endif %}">{{ run.status }}</span></h1>
+            <p class="lede">Live logs refresh every two seconds. Species chips mirror the taxonomy banners you’d see on UniProt or InterPro.</p>
         </div>
-        <div class="pill subtle">Live</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <span class="species-chip">{{ species.species_label or 'Auto detection' }}</span>
+            <span class="pill subtle">{{ species.species_detection or 'pending' }}</span>
+        </div>
     </div>
     <div class="grid">
         <div class="field">
@@ -35,6 +39,14 @@
             <p class="hint">FDR</p>
             <p class="strong">{{ 'On' if run.params.use_fdr else 'Off' }}</p>
         </div>
+        <div class="field">
+            <p class="hint">Species key</p>
+            <p class="strong">{{ species.species_key or 'auto' }}</p>
+        </div>
+        <div class="field">
+            <p class="hint">STRING taxon</p>
+            <p class="strong">{{ species.string_species_id or '—' }}</p>
+        </div>
     </div>
 
     <div class="log-container" id="log-box">
@@ -46,6 +58,9 @@
         {% endif %}
         <a id="results-link" class="btn secondary" href="/runs/{{ run.id }}/results" style="display: none;">View results</a>
         <a class="link" href="/runs/{{ run.id }}/logs" target="_blank">Open full log</a>
+    </div>
+    <div class="callout" style="margin-top:18px;">
+        The FastAPI service captures raw logs in <strong>runs/{{ run.id }}/pipeline.log</strong>. Share that file when asking for help—the structure matches UniProt/InterPro submission diagnostics.
     </div>
 </section>
 

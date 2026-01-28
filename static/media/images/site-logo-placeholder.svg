@@ -1,0 +1,11 @@
+<svg width="200" height="72" viewBox="0 0 200 72" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Custom logo placeholder">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#d4f8c4" />
+      <stop offset="100%" stop-color="#9ad6c3" />
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="198" height="70" rx="14" fill="url(#grad)" stroke="#2f6b3c" stroke-width="2" />
+  <text x="50%" y="40" text-anchor="middle" font-size="18" font-family="'IBM Plex Sans', Arial, sans-serif" fill="#1b4c2a">Your Logo</text>
+  <text x="50%" y="58" text-anchor="middle" font-size="12" font-family="'IBM Plex Sans', Arial, sans-serif" fill="#1b4c2a" opacity="0.75">Replace this SVG</text>
+</svg>

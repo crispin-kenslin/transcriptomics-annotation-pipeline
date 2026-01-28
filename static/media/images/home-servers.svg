@@ -1,0 +1,21 @@
+<svg width="600" height="360" viewBox="0 0 600 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Server stack placeholder">
+  <defs>
+    <linearGradient id="rack" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#f8f9fb" />
+      <stop offset="100%" stop-color="#e4e9f2" />
+    </linearGradient>
+  </defs>
+  <rect width="600" height="360" rx="32" fill="url(#rack)" />
+  <g stroke="#2b4a7d" fill="#fff" stroke-width="3">
+    <rect x="120" y="70" width="360" height="60" rx="12" />
+    <rect x="120" y="150" width="360" height="60" rx="12" />
+    <rect x="120" y="230" width="360" height="60" rx="12" />
+  </g>
+  <g fill="#2b4a7d">
+    <circle cx="160" cy="100" r="8" />
+    <circle cx="160" cy="180" r="8" />
+    <circle cx="160" cy="260" r="8" />
+  </g>
+  <text x="50%" y="170" text-anchor="middle" font-family="'IBM Plex Sans', Arial, sans-serif" font-size="28" fill="#2b4a7d">Server & Pipeline Art</text>
+  <text x="50%" y="205" text-anchor="middle" font-family="'IBM Plex Sans', Arial, sans-serif" font-size="18" fill="#2b4a7d" opacity="0.8">Swap for rack, lab, or cloud imagery</text>
+</svg>

@@ -11,7 +11,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 from threading import Lock, Thread
-from typing import Optional
+from typing import Optional, Tuple
 import signal
 
 import pandas as pd
@@ -21,6 +21,13 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import numpy as np
+
+from plant_registry import (
+    DEFAULT_SPECIES_KEY,
+    detect_species_from_genes,
+    get_species_config,
+    list_species_options,
+)
 
 ROOT_DIR = Path(__file__).parent
 RUNS_DIR = ROOT_DIR / "runs"
@@ -85,6 +92,7 @@ class RunManager:
             "gene_col": "gene_id",
             "log2fc_col": "log2FC",
             "pval_col": "p_value",
+            "adj_p_col": None,
             "log2fc_threshold": 1.0,
             "pvalue_threshold": 0.05,
             "distance_percentile": 95,
@@ -150,6 +158,16 @@ class RunManager:
             for rid in to_delete:
                 self.runs.pop(rid, None)
             return sorted(self.runs.values(), key=lambda r: r["created_at"], reverse=True)
+
+    def update_run_params(self, run_id: str, updates: dict):
+        with self.lock:
+            info = self.runs.get(run_id)
+            if not info:
+                raise ValueError("Unknown run")
+            info["params"].update(updates)
+            info["updated_at"] = datetime.utcnow()
+        self._save_meta(info)
+        return info
 
     def get(self, run_id):
         with self.lock:
@@ -232,6 +250,20 @@ class RunManager:
                     "RUN_DASH_SERVER": "0",
                 }
             )
+
+            species_key = info["params"].get("species_key", DEFAULT_SPECIES_KEY)
+            env["PLANT_SPECIES_KEY"] = species_key
+            env["PLANT_SPECIES_LABEL"] = info["params"].get(
+                "species_label", species_key.title()
+            )
+            env["PLANT_SPECIES_SHORT_NAME"] = info["params"].get(
+                "species_short_name", env["PLANT_SPECIES_LABEL"]
+            )
+            env["SPECIES_SCIENTIFIC_NAME"] = info["params"].get(
+                "species_scientific_name", env["PLANT_SPECIES_LABEL"]
+            )
+            env["UNIPROT_TAX_ID"] = str(info["params"].get("uniprot_tax_id", 39947))
+            env["STRING_SPECIES"] = str(info["params"].get("string_species_id", 39947))
 
             # Assume main_final.py is in the same folder as server.py
             main_py_path = Path(__file__).parent / "main_final.py"
@@ -360,26 +392,45 @@ class RunManager:
 manager = RunManager()
 
 
-def _prepare_expression(upload_path: Path, expr_path: Path, gene_col: str, log2fc_col: str, pval_col: str):
+def _prepare_expression(
+    upload_path: Path,
+    expr_path: Path,
+    gene_col: str,
+    log2fc_col: str,
+    pval_col: str,
+    adj_p_col: Optional[str] = None,
+) -> Tuple[int, Optional[str]]:
     try:
         df = pd.read_csv(upload_path)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Unable to read CSV: {exc}")
 
-    missing = [col for col in [gene_col, log2fc_col, pval_col] if col not in df.columns]
+    adj_p_col_clean = (adj_p_col or "").strip()
+    required_cols = [gene_col, log2fc_col, pval_col]
+    if adj_p_col_clean:
+        required_cols.append(adj_p_col_clean)
+    missing = [col for col in required_cols if col not in df.columns]
     if missing:
         raise HTTPException(status_code=400, detail=f"Missing columns: {', '.join(missing)}")
+
+    adj_series = None
+    if adj_p_col_clean:
+        adj_series = df[adj_p_col_clean].copy()
 
     renamed = df.rename(columns={gene_col: "gene_id", log2fc_col: "log2FC", pval_col: "p_value"})
     renamed["log2FC"] = pd.to_numeric(renamed["log2FC"], errors="coerce")
     renamed["p_value"] = pd.to_numeric(renamed["p_value"], errors="coerce")
     renamed = renamed.dropna(subset=["gene_id", "log2FC", "p_value"])
 
+    if adj_series is not None:
+        renamed["adj_p_value"] = pd.to_numeric(adj_series, errors="coerce")
+
     if renamed.empty:
         raise HTTPException(status_code=400, detail="No valid rows after cleaning.")
 
     renamed.to_csv(expr_path, index=False)
-    return len(renamed)
+    inferred = detect_species_from_genes(renamed["gene_id"]) if not renamed.empty else None
+    return len(renamed), inferred
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -389,7 +440,65 @@ async def home(request: Request):
         r["name"] = r.get("name") or (r.get("params", {}) or {}).get("job_name")
     return TEMPLATES.TemplateResponse(
         "index.html",
-        {"request": request, "runs": runs},
+        {
+            "request": request,
+            "runs": runs,
+            "species_options": list_species_options(),
+            "default_species": DEFAULT_SPECIES_KEY,
+        },
+    )
+
+
+@app.get("/run", response_class=HTMLResponse)
+async def run_launcher(request: Request):
+    runs = manager.list_runs()
+    for r in runs:
+        r["name"] = r.get("name") or (r.get("params", {}) or {}).get("job_name")
+    return TEMPLATES.TemplateResponse(
+        "run_launcher.html",
+        {
+            "request": request,
+            "runs": runs,
+            "species_options": list_species_options(),
+            "default_species": DEFAULT_SPECIES_KEY,
+        },
+    )
+
+
+@app.get("/history", response_class=HTMLResponse)
+async def history_page(request: Request):
+    runs = manager.list_runs()
+    for r in runs:
+        r["name"] = r.get("name") or (r.get("params", {}) or {}).get("job_name")
+    return TEMPLATES.TemplateResponse(
+        "history.html",
+        {
+            "request": request,
+            "runs": runs,
+        },
+    )
+
+
+@app.get("/species", response_class=HTMLResponse)
+async def species_page(request: Request):
+    return TEMPLATES.TemplateResponse(
+        "species.html",
+        {
+            "request": request,
+            "species_options": list_species_options(),
+        },
+    )
+
+
+@app.get("/workflow", response_class=HTMLResponse)
+async def workflow_page(request: Request):
+    runs = manager.list_runs()
+    return TEMPLATES.TemplateResponse(
+        "workflow.html",
+        {
+            "request": request,
+            "runs": runs,
+        },
     )
 
 
@@ -410,17 +519,24 @@ async def run_pipeline(
     distance_percentile: float = Form(95),
     use_fdr: bool = Form(False),
     job_name: str = Form(""),
+    species_key: str = Form("auto"),
+    adj_p_col: str = Form(""),
 ):
     job_name_clean = job_name.strip() or None
+    requested_species = (species_key or "auto").strip().lower() or "auto"
+    adj_col_clean = (adj_p_col or "").strip()
     params = {
         "gene_col": gene_col.strip(),
         "log2fc_col": log2fc_col.strip(),
         "pval_col": pval_col.strip(),
+        "adj_p_col": adj_col_clean or None,
         "log2fc_threshold": log2fc_threshold,
         "pvalue_threshold": pvalue_threshold,
         "distance_percentile": distance_percentile,
         "use_fdr": use_fdr,
         "job_name": job_name_clean,
+        "species_key": requested_species,
+        "species_detection": "pending",
     }
 
     info = manager.create(params)
@@ -428,12 +544,40 @@ async def run_pipeline(
     with info["input_path"].open("wb") as buffer:
         shutil.copyfileobj(data_file.file, buffer)
 
-    cleaned_rows = _prepare_expression(
+    cleaned_rows, inferred_species = _prepare_expression(
         info["input_path"],
         info["expr_path"],
         params["gene_col"],
         params["log2fc_col"],
         params["pval_col"],
+        params.get("adj_p_col"),
+    )
+
+    final_species_key = requested_species
+    detection_label = "user-selected"
+    if requested_species == "auto":
+        if inferred_species:
+            final_species_key = inferred_species
+            detection_label = "auto-detected"
+        else:
+            final_species_key = DEFAULT_SPECIES_KEY
+            detection_label = "auto-fallback"
+
+    species_cfg = get_species_config(final_species_key)
+    info = manager.update_run_params(
+        info["id"],
+        {
+            "species_key": species_cfg.key,
+            "species_label": species_cfg.label,
+            "species_scientific_name": species_cfg.scientific_name,
+            "species_short_name": species_cfg.short_name,
+            "string_species_id": species_cfg.string_species_id,
+            "uniprot_tax_id": species_cfg.uniprot_tax_id,
+            "species_detection": detection_label,
+            "species_auto_candidate": inferred_species,
+            "cleaned_rows": cleaned_rows,
+            "adj_p_col": params.get("adj_p_col"),
+        },
     )
 
     manager.start(info["id"])
@@ -452,7 +596,7 @@ async def view_run(request: Request, run_id: str):
     info["name"] = info.get("name") or (info.get("params", {}) or {}).get("job_name")
     return TEMPLATES.TemplateResponse(
         "run.html",
-        {"request": request, "run": info},
+        {"request": request, "run": info, "species_params": info.get("params", {})},
     )
 
 
@@ -582,6 +726,7 @@ async def view_results(request: Request, run_id: str):
         "networks": networks,
         "run_id": run_id,
         "run_duration": run_duration,
+        "species_params": info.get("params", {}),
     }
     return TEMPLATES.TemplateResponse("results.html", context)
 
@@ -731,6 +876,7 @@ async def view_downloads(request: Request, run_id: str):
         "go_summary": go_summary,
         "eggnog_dom_summary": eggnog_dom_summary,
         "interpro_summary": interpro_summary,
+        "species_params": info.get("params", {}),
     }
     return TEMPLATES.TemplateResponse("downloads.html", context)
 
