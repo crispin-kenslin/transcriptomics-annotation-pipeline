@@ -12,3 +12,5 @@ python-louvain
 statsmodels
 python-multipart
 jinja2
+openpyxl
+xlrd

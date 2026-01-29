@@ -1,4 +1,4 @@
-name: transcripomics_server
+name: TAP
 channels:
   - conda-forge
   - defaults
