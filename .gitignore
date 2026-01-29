@@ -1,2 +1,3 @@
 runs/
-__pycahche__/ 
+__pycache__/ 
+*.pyc
