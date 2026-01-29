@@ -76,6 +76,7 @@ class RunManager:
                 "summary": info.get("summary", {}),
                 "returncode": info.get("returncode"),
                 "pid": info.get("pid"),
+                "input_filename": info.get("input_filename"),
             }
             meta_path.parent.mkdir(parents=True, exist_ok=True)
             meta_path.write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
@@ -114,6 +115,7 @@ class RunManager:
         summary = meta.get("summary") or self._collect_summary(output_dir)
         status = meta.get("status") or ("completed" if output_dir.exists() else "unknown")
 
+        input_filename = meta.get("input_filename") or "upload.csv"
         info = {
             "id": run_id,
             "name": name,
@@ -122,7 +124,8 @@ class RunManager:
             "updated_at": updated_at,
             "run_dir": run_dir,
             "output_dir": output_dir,
-            "input_path": run_dir / "upload.csv",
+            "input_path": run_dir / input_filename,
+            "input_filename": input_filename,
             "expr_path": run_dir / "GEO_data.csv",
             "log_path": run_dir / "pipeline.log",
             "logs": deque(maxlen=800),
@@ -181,6 +184,7 @@ class RunManager:
         run_dir = RUNS_DIR / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
+        input_filename = "upload.csv"
         info = {
             "id": run_id,
             "name": params.get("job_name") or None,
@@ -189,7 +193,8 @@ class RunManager:
             "updated_at": datetime.utcnow(),
             "run_dir": run_dir,
             "output_dir": run_dir / "pipeline_results",
-            "input_path": run_dir / "upload.csv",
+            "input_path": run_dir / input_filename,
+            "input_filename": input_filename,
             "expr_path": run_dir / "GEO_data.csv",
             "log_path": run_dir / "pipeline.log",
             "logs": deque(maxlen=800),
@@ -392,6 +397,22 @@ class RunManager:
 manager = RunManager()
 
 
+def _read_expression_file(path: Path):
+    ext = path.suffix.lower()
+    if ext == ".csv":
+        return pd.read_csv(path)
+    if ext in {".tsv", ".txt"}:
+        return pd.read_csv(path, sep="\t")
+    if ext == ".xlsx":
+        return pd.read_excel(path, engine="openpyxl")
+    if ext == ".xls":
+        return pd.read_excel(path, engine="xlrd")
+    try:
+        return pd.read_csv(path, sep=None, engine="python")
+    except Exception:
+        return pd.read_excel(path)
+
+
 def _prepare_expression(
     upload_path: Path,
     expr_path: Path,
@@ -401,9 +422,9 @@ def _prepare_expression(
     adj_p_col: Optional[str] = None,
 ) -> Tuple[int, Optional[str]]:
     try:
-        df = pd.read_csv(upload_path)
+        df = _read_expression_file(upload_path)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Unable to read CSV: {exc}")
+        raise HTTPException(status_code=400, detail=f"Unable to read input file: {exc}")
 
     adj_p_col_clean = (adj_p_col or "").strip()
     required_cols = [gene_col, log2fc_col, pval_col]
@@ -541,11 +562,20 @@ async def run_pipeline(
 
     info = manager.create(params)
 
-    with info["input_path"].open("wb") as buffer:
+    original_name = (data_file.filename or "upload.csv").strip()
+    suffix = Path(original_name).suffix.lower()
+    if suffix not in {".csv", ".tsv", ".txt", ".xlsx", ".xls"}:
+        suffix = ".csv"
+    upload_target = info["run_dir"] / f"upload{suffix}"
+    info["input_path"] = upload_target
+    info["input_filename"] = upload_target.name
+    manager._save_meta(info)
+
+    with upload_target.open("wb") as buffer:
         shutil.copyfileobj(data_file.file, buffer)
 
     cleaned_rows, inferred_species = _prepare_expression(
-        info["input_path"],
+        upload_target,
         info["expr_path"],
         params["gene_col"],
         params["log2fc_col"],

@@ -6,6 +6,8 @@ import os
 import time
 import json
 import base64
+import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import requests
 from requests.adapters import HTTPAdapter
@@ -92,6 +94,7 @@ PHOBIUS_STATUS_TIMEOUT = env_float("PHOBIUS_STATUS_TIMEOUT", 10.0)
 PHOBIUS_RESULT_TIMEOUT = env_float("PHOBIUS_RESULT_TIMEOUT", 10.0)
 PHOBIUS_RESULT_RETRIES = int(os.getenv("PHOBIUS_RESULT_RETRIES", "40"))
 PHOBIUS_RESULT_DELAY = env_float("PHOBIUS_RESULT_DELAY", 0.5)
+PHOBIUS_FETCH_PNG = True
 ENABLE_GOR4 = env_bool("ENABLE_GOR4", True)
 GOR4_POST_URL = "https://npsa-prabi.ibcp.fr/cgi-bin/secpred_gor4.pl"
 GOR4_TMP_BASE = "https://npsa-prabi.ibcp.fr/tmp"
@@ -99,12 +102,15 @@ GOR4_ALI_WIDTH = os.getenv("GOR4_ALI_WIDTH", "70")
 GOR4_MAX_POLLS = int(os.getenv("GOR4_MAX_POLLS", "40"))
 GOR4_POLL_DELAY = env_float("GOR4_POLL_DELAY", 0.5)
 GOR4_RESULT_TIMEOUT = env_float("GOR4_RESULT_TIMEOUT", 10.0)
+GOR4_FETCH_IMAGES = True
 GOR4_HEADER = "Pos|AA|Prediction|P(H)|P(E)|P(C)"
 GOR4_JOB_REGEX = re.compile(r"/tmp/([a-f0-9]+)\.gor4")
+GOR4_CACHE_DIR = os.getenv("GOR4_CACHE_DIR", f"{CACHE_DIR}/gor4")
+PHOBIUS_CACHE_DIR = os.getenv("PHOBIUS_CACHE_DIR", f"{CACHE_DIR}/phobius")
 
 # Create directories
 for d in [OUTPUT_DIR, CACHE_DIR, GENE_DIR, UP_GENES_DIR, DOWN_GENES_DIR, 
-          NETWORK_DIR, UP_NETWORK, DOWN_NETWORK]:
+        NETWORK_DIR, UP_NETWORK, DOWN_NETWORK, GOR4_CACHE_DIR, PHOBIUS_CACHE_DIR]:
     os.makedirs(d, exist_ok=True)
 
 print("=" * 60)
@@ -156,6 +162,22 @@ def get_base64_image(path):
             return base64.b64encode(f.read()).decode()
     except:
         return ""
+
+
+def read_expression_file(path: str):
+    ext = Path(path).suffix.lower()
+    if ext == ".csv":
+        return pd.read_csv(path)
+    if ext in {".tsv", ".txt"}:
+        return pd.read_csv(path, sep="\t")
+    if ext == ".xlsx":
+        return pd.read_excel(path, engine="openpyxl")
+    if ext == ".xls":
+        return pd.read_excel(path, engine="xlrd")
+    try:
+        return pd.read_csv(path, sep=None, engine="python")
+    except Exception:
+        return pd.read_excel(path)
 
 def create_session():
     session = requests.Session()
@@ -214,107 +236,11 @@ def clean_protein_sequence(seq):
     return "".join([aa for aa in seq if aa in VALID_AA])
 
 
-def _gor4_wait_for_file(url, binary=True):
-    retries = max(int(GOR4_MAX_POLLS), 1)
-    for attempt in range(retries):
-        try:
-            resp = requests.get(url, timeout=GOR4_RESULT_TIMEOUT)
-            if resp.status_code == 200 and resp.content:
-                return resp.content if binary else resp.text
-        except Exception:
-            pass
-        if attempt < retries - 1:
-            time.sleep(GOR4_POLL_DELAY)
-    return None
+def _seq_hash(seq: str) -> str:
+    return hashlib.sha256(seq.encode("utf-8")).hexdigest()
 
 
-def _wait_for_phobius(job_id: str):
-    status_url = f"{PHOBIUS_BASE}/status/{job_id}"
-    deadline = time.time() + PHOBIUS_MAX_WAIT
-    last_error = None
-    while time.time() < deadline:
-        try:
-            resp = requests.get(status_url, timeout=PHOBIUS_STATUS_TIMEOUT)
-            resp.raise_for_status()
-            status = (resp.text or "").strip().upper()
-            if status == "FINISHED":
-                return True
-            if status == "ERROR":
-                raise RuntimeError("Phobius job failed")
-        except Exception as exc:
-            last_error = exc
-        time.sleep(PHOBIUS_POLL_INTERVAL)
-    raise TimeoutError(f"Phobius job {job_id} timed out: {last_error or 'no status response'}")
-
-
-def _fetch_phobius_artifact(url: str, binary: bool = True):
-    retries = max(PHOBIUS_RESULT_RETRIES, 1)
-    for attempt in range(retries):
-        try:
-            resp = requests.get(url, timeout=PHOBIUS_RESULT_TIMEOUT)
-            if resp.status_code == 200 and resp.content:
-                return resp.content if binary else resp.text
-        except Exception:
-            pass
-        if attempt < retries - 1:
-            time.sleep(PHOBIUS_RESULT_DELAY)
-    raise TimeoutError(f"Phobius artifact not ready at {url}")
-
-
-def predict_secondary_structure_gor4(seq, gene_dir=None, gene_id=None):
-    if not ENABLE_GOR4:
-        return None
-    seq = clean_protein_sequence(seq)
-    if not seq:
-        return None
-
-    payload = {"notice": seq, "ali_width": GOR4_ALI_WIDTH}
-    try:
-        resp = requests.post(GOR4_POST_URL, data=payload, timeout=60)
-        resp.raise_for_status()
-    except Exception as exc:
-        print(f"    GOR4 submission failed: {exc}")
-        return None
-
-    match = GOR4_JOB_REGEX.search(resp.text)
-    if not match:
-        print("    GOR4 job ID missing in response")
-        return None
-
-    job_id = match.group(1)
-    base_url = f"{GOR4_TMP_BASE}/{job_id}.gor4"
-    reports_dir = Path(gene_dir) if gene_dir else Path(CACHE_DIR) / "gor4"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    artifact_prefix = gene_id if gene_id else f"gor4_{job_id}"
-
-    artifact_paths = {}
-    state_bytes = _gor4_wait_for_file(f"{base_url}.mpsa_state.gif", binary=True)
-    if state_bytes:
-        state_path = reports_dir / f"{artifact_prefix}_mpsa_state.gif"
-        with open(state_path, "wb") as fh:
-            fh.write(state_bytes)
-        artifact_paths["gor4_state"] = str(state_path)
-
-    profile_bytes = _gor4_wait_for_file(f"{base_url}.mpsa1.gif", binary=True)
-    if profile_bytes:
-        profile_path = reports_dir / f"{artifact_prefix}_mpsa1.gif"
-        with open(profile_path, "wb") as fh:
-            fh.write(profile_bytes)
-        artifact_paths["gor4_profile"] = str(profile_path)
-
-    result_text = _gor4_wait_for_file(base_url, binary=False)
-    if not result_text:
-        print("    GOR4 result text was not ready in time")
-        return None
-
-    raw_path = reports_dir / f"{artifact_prefix}_gor4_raw.txt"
-    try:
-        with open(raw_path, "w") as fh:
-            fh.write(result_text)
-        artifact_paths["gor4_raw"] = str(raw_path)
-    except Exception as exc:
-        print(f"    Failed to save raw GOR4 output: {exc}")
-
+def _parse_gor4_output(result_text: str, seq: str, gene_id: str, artifact_prefix: str, artifact_paths: dict):
     rows = []
     for line in result_text.splitlines():
         stripped = line.strip()
@@ -373,9 +299,306 @@ def predict_secondary_structure_gor4(seq, gene_dir=None, gene_id=None):
         "confidence": confidence,
         "formatted_lines": formatted_lines,
         "method": "gor4",
-        "gor4_job_id": job_id,
         "gor4_artifacts": artifact_paths,
     }
+
+
+def _load_gor4_cache(seq: str, gene_dir: str, gene_id: str):
+    cache_key = _seq_hash(seq)
+    cache_dir = Path(GOR4_CACHE_DIR) / cache_key
+    raw_path = cache_dir / "gor4_raw.txt"
+    if not raw_path.exists():
+        return None
+
+    try:
+        result_text = raw_path.read_text(errors="ignore")
+    except Exception:
+        return None
+
+    reports_dir = Path(gene_dir) if gene_dir else Path(CACHE_DIR) / "gor4"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    artifact_prefix = gene_id or f"gor4_{cache_key[:8]}"
+    artifact_paths = {}
+
+    state_src = cache_dir / "mpsa_state.gif"
+    profile_src = cache_dir / "mpsa1.gif"
+    if state_src.exists():
+        state_dst = reports_dir / f"{artifact_prefix}_mpsa_state.gif"
+        if not state_dst.exists():
+            state_dst.write_bytes(state_src.read_bytes())
+        artifact_paths["gor4_state"] = str(state_dst)
+
+    if profile_src.exists():
+        profile_dst = reports_dir / f"{artifact_prefix}_mpsa1.gif"
+        if not profile_dst.exists():
+            profile_dst.write_bytes(profile_src.read_bytes())
+        artifact_paths["gor4_profile"] = str(profile_dst)
+
+    raw_dst = reports_dir / f"{artifact_prefix}_gor4_raw.txt"
+    if not raw_dst.exists():
+        raw_dst.write_text(result_text)
+    artifact_paths["gor4_raw"] = str(raw_dst)
+
+    parsed = _parse_gor4_output(result_text, seq, gene_id, artifact_prefix, artifact_paths)
+    if parsed:
+        parsed["gor4_job_id"] = f"cache:{cache_key[:10]}"
+        parsed["gor4_artifacts"] = artifact_paths
+    return parsed
+
+
+def _save_gor4_cache(seq: str, result_text: str, state_bytes: bytes, profile_bytes: bytes):
+    cache_key = _seq_hash(seq)
+    cache_dir = Path(GOR4_CACHE_DIR) / cache_key
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "gor4_raw.txt").write_text(result_text)
+    if state_bytes:
+        (cache_dir / "mpsa_state.gif").write_bytes(state_bytes)
+    if profile_bytes:
+        (cache_dir / "mpsa1.gif").write_bytes(profile_bytes)
+
+
+def _load_phobius_cache(seq: str, gene_dir: str, gene_id: str):
+    cache_key = _seq_hash(seq)
+    cache_dir = Path(PHOBIUS_CACHE_DIR) / cache_key
+    txt_src = cache_dir / "tmhmm.txt"
+    png_src = cache_dir / "tmhmm.png"
+    if not txt_src.exists():
+        return None
+
+    gene_dir_path = Path(gene_dir)
+    gene_dir_path.mkdir(parents=True, exist_ok=True)
+    txt_dst = gene_dir_path / f"tmhmm_{gene_id}.txt"
+    if not txt_dst.exists():
+        txt_dst.write_bytes(txt_src.read_bytes())
+    png_dst = gene_dir_path / f"tmhmm_{gene_id}.png"
+    if png_src.exists() and not png_dst.exists():
+        png_dst.write_bytes(png_src.read_bytes())
+    try:
+        text = txt_dst.read_text(errors="ignore")
+    except Exception:
+        text = ""
+    return {"text": text, "text_path": txt_dst, "png_path": png_dst if png_dst.exists() else None, "cached": True}
+
+
+def _save_phobius_cache(seq: str, txt_bytes: bytes, png_bytes):
+    cache_key = _seq_hash(seq)
+    cache_dir = Path(PHOBIUS_CACHE_DIR) / cache_key
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "tmhmm.txt").write_bytes(txt_bytes)
+    if png_bytes:
+        (cache_dir / "tmhmm.png").write_bytes(png_bytes)
+
+
+def _gor4_wait_for_file(url, binary=True):
+    retries = max(int(GOR4_MAX_POLLS), 1)
+    for attempt in range(retries):
+        try:
+            resp = SESSION.get(url, timeout=GOR4_RESULT_TIMEOUT)
+            if resp.status_code == 200 and resp.content:
+                return resp.content if binary else resp.text
+        except Exception:
+            pass
+        if attempt < retries - 1:
+            time.sleep(GOR4_POLL_DELAY)
+    return None
+
+
+def _wait_for_phobius(job_id: str):
+    status_url = f"{PHOBIUS_BASE}/status/{job_id}"
+    deadline = time.time() + PHOBIUS_MAX_WAIT
+    last_error = None
+    while time.time() < deadline:
+        try:
+            resp = SESSION.get(status_url, timeout=PHOBIUS_STATUS_TIMEOUT)
+            resp.raise_for_status()
+            status = (resp.text or "").strip().upper()
+            if status == "FINISHED":
+                return True
+            if status == "ERROR":
+                raise RuntimeError("Phobius job failed")
+        except Exception as exc:
+            last_error = exc
+        time.sleep(PHOBIUS_POLL_INTERVAL)
+    raise TimeoutError(f"Phobius job {job_id} timed out: {last_error or 'no status response'}")
+
+
+def _fetch_phobius_artifact(url: str, binary: bool = True):
+    retries = max(PHOBIUS_RESULT_RETRIES, 1)
+    for attempt in range(retries):
+        try:
+            resp = SESSION.get(url, timeout=PHOBIUS_RESULT_TIMEOUT)
+            if resp.status_code == 200 and resp.content:
+                return resp.content if binary else resp.text
+        except Exception:
+            pass
+        if attempt < retries - 1:
+            time.sleep(PHOBIUS_RESULT_DELAY)
+    raise TimeoutError(f"Phobius artifact not ready at {url}")
+
+
+def run_phobius_cached(seq: str, gene_dir: str, gene_id: str):
+    gene_dir_path = Path(gene_dir)
+    gene_dir_path.mkdir(parents=True, exist_ok=True)
+    txt_path = gene_dir_path / f"tmhmm_{gene_id}.txt"
+    png_path = gene_dir_path / f"tmhmm_{gene_id}.png"
+
+    if txt_path.exists():
+        try:
+            cached_text = txt_path.read_text(errors="ignore")
+        except Exception:
+            cached_text = ""
+        return {
+            "text": cached_text,
+            "text_path": txt_path,
+            "png_path": png_path if png_path.exists() else None,
+            "cached": True,
+        }
+
+    cached = _load_phobius_cache(seq, gene_dir, gene_id)
+    if cached:
+        return cached
+
+    fasta_payload = f">{gene_id}\n{seq}\n"
+    ph_resp = SESSION.post(
+        f"{PHOBIUS_BASE}/run",
+        data={
+            "sequence": fasta_payload,
+            "email": PHOBIUS_EMAIL,
+            "format": "grp",
+            "toolId": "phobius",
+            "stype": "protein",
+            "database": "pfam-a",
+        },
+        timeout=30,
+    )
+    ph_resp.raise_for_status()
+    job_id = ph_resp.text.strip()
+    _wait_for_phobius(job_id)
+
+    out_txt_url = f"{PHOBIUS_BASE}/result/{job_id}/out"
+    out_png_url = f"{PHOBIUS_BASE}/result/{job_id}/visual-png"
+
+    txt_bytes = _fetch_phobius_artifact(out_txt_url, binary=True)
+    txt_path.write_bytes(txt_bytes)
+    png_bytes = None
+    if PHOBIUS_FETCH_PNG:
+        try:
+            png_bytes = _fetch_phobius_artifact(out_png_url, binary=True)
+            png_path.write_bytes(png_bytes)
+        except TimeoutError:
+            png_bytes = None
+
+    try:
+        _save_phobius_cache(seq, txt_bytes, png_bytes)
+    except Exception:
+        pass
+
+    try:
+        text = txt_path.read_text(errors="ignore")
+    except Exception:
+        text = ""
+    return {
+        "text": text,
+        "text_path": txt_path,
+        "png_path": png_path if png_path.exists() else None,
+        "cached": False,
+        "job_id": job_id,
+    }
+
+
+def predict_secondary_structure_gor4(seq, gene_dir=None, gene_id=None):
+    if not ENABLE_GOR4:
+        return None
+    seq = clean_protein_sequence(seq)
+    if not seq:
+        return None
+
+    if gene_dir and gene_id:
+        local_raw = Path(gene_dir) / f"{gene_id}_gor4_raw.txt"
+        if local_raw.exists():
+            try:
+                local_text = local_raw.read_text(errors="ignore")
+            except Exception:
+                local_text = ""
+            if local_text:
+                artifact_paths = {"gor4_raw": str(local_raw)}
+                local_state = Path(gene_dir) / f"{gene_id}_mpsa_state.gif"
+                local_profile = Path(gene_dir) / f"{gene_id}_mpsa1.gif"
+                if local_state.exists():
+                    artifact_paths["gor4_state"] = str(local_state)
+                if local_profile.exists():
+                    artifact_paths["gor4_profile"] = str(local_profile)
+                parsed = _parse_gor4_output(local_text, seq, gene_id, gene_id, artifact_paths)
+                if parsed:
+                    parsed["gor4_job_id"] = "local"
+                    parsed["gor4_artifacts"] = artifact_paths
+                    return parsed
+
+    cached = _load_gor4_cache(seq, gene_dir, gene_id)
+    if cached:
+        return cached
+
+    payload = {"notice": seq, "ali_width": GOR4_ALI_WIDTH}
+    try:
+        resp = SESSION.post(GOR4_POST_URL, data=payload, timeout=60)
+        resp.raise_for_status()
+    except Exception as exc:
+        print(f"    GOR4 submission failed: {exc}")
+        return None
+
+    match = GOR4_JOB_REGEX.search(resp.text)
+    if not match:
+        print("    GOR4 job ID missing in response")
+        return None
+
+    job_id = match.group(1)
+    base_url = f"{GOR4_TMP_BASE}/{job_id}.gor4"
+    reports_dir = Path(gene_dir) if gene_dir else Path(CACHE_DIR) / "gor4"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    artifact_prefix = gene_id if gene_id else f"gor4_{job_id}"
+
+    artifact_paths = {}
+    state_bytes = None
+    profile_bytes = None
+    if GOR4_FETCH_IMAGES:
+        state_bytes = _gor4_wait_for_file(f"{base_url}.mpsa_state.gif", binary=True)
+        if state_bytes:
+            state_path = reports_dir / f"{artifact_prefix}_mpsa_state.gif"
+            with open(state_path, "wb") as fh:
+                fh.write(state_bytes)
+            artifact_paths["gor4_state"] = str(state_path)
+
+        profile_bytes = _gor4_wait_for_file(f"{base_url}.mpsa1.gif", binary=True)
+        if profile_bytes:
+            profile_path = reports_dir / f"{artifact_prefix}_mpsa1.gif"
+            with open(profile_path, "wb") as fh:
+                fh.write(profile_bytes)
+            artifact_paths["gor4_profile"] = str(profile_path)
+
+    result_text = _gor4_wait_for_file(base_url, binary=False)
+    if not result_text:
+        print("    GOR4 result text was not ready in time")
+        return None
+
+    raw_path = reports_dir / f"{artifact_prefix}_gor4_raw.txt"
+    try:
+        with open(raw_path, "w") as fh:
+            fh.write(result_text)
+        artifact_paths["gor4_raw"] = str(raw_path)
+    except Exception as exc:
+        print(f"    Failed to save raw GOR4 output: {exc}")
+
+    try:
+        _save_gor4_cache(seq, result_text, state_bytes, profile_bytes)
+    except Exception:
+        pass
+
+    parsed = _parse_gor4_output(result_text, seq, gene_id, artifact_prefix, artifact_paths)
+    if not parsed:
+        return None
+    parsed["gor4_job_id"] = job_id
+    parsed["gor4_artifacts"] = artifact_paths
+    return parsed
 
 
 def predict_secondary_structure(seq, acc=None, gene_dir=None, gene_id=None):
@@ -470,6 +693,7 @@ kegg_cache = load_cache("kegg.json")
 alphafold_cache = load_cache("alphafold.json")
 uniprot_entry_cache = load_cache("uniprot_entry.json")
 string_tsv_cache = load_cache("string_tsv.json")
+string_id_cache = load_cache("string_ids.json")
 string_cytoscape_cache = {}
 gene_panel_cache = {}
 
@@ -487,16 +711,31 @@ print("\n[STEP 1/4] Loading expression data...")
 if is_step_complete_with_files("data_loading", [
     f"{CACHE_DIR}/processed_data.csv",
     f"{OUTPUT_DIR}/upregulated_genes.csv",
-    f"{OUTPUT_DIR}/downregulated_genes.csv"
+    f"{OUTPUT_DIR}/downregulated_genes.csv",
+    f"{OUTPUT_DIR}/outlier_genes.csv"
 ]):
     print("  ✓ Using cached data")
+    try:
+        raw_total = len(read_expression_file(EXPR_FILE))
+    except Exception:
+        raw_total = None
     df = pd.read_csv(f"{CACHE_DIR}/processed_data.csv")
     upregulated = pd.read_csv(f"{OUTPUT_DIR}/upregulated_genes.csv")
     downregulated = pd.read_csv(f"{OUTPUT_DIR}/downregulated_genes.csv")
+    outliers = pd.read_csv(f"{OUTPUT_DIR}/outlier_genes.csv")
+    filtered_total = len(df)
+    outlier_total = len(outliers)
+    pval_column = "adj_p_value" if USE_ADJUSTED_PVALUE else "p_value"
+    if pval_column not in df.columns:
+        pval_column = "p_value" if "p_value" in df.columns else pval_column
+    sig_up = df[(df["log2FC"] >= LOG2FC_THRESHOLD) & (df[pval_column] <= PVALUE_THRESHOLD)]
+    sig_down = df[(df["log2FC"] <= -LOG2FC_THRESHOLD) & (df[pval_column] <= PVALUE_THRESHOLD)]
 else:
 
     print("  Processing expression data...")
-    df = pd.read_csv(EXPR_FILE)
+    raw_df = read_expression_file(EXPR_FILE)
+    raw_total = len(raw_df)
+    df = raw_df.copy()
     required_cols = ["gene_id", "log2FC", "p_value"]
 
     for c in required_cols:
@@ -514,6 +753,7 @@ else:
     min_abs_log2fc = 0.1  # Remove genes with almost no change
     max_pval = 0.99       # Remove genes with no evidence of change
     df = df[(df["log2FC"].abs() >= min_abs_log2fc) & (df["p_value"] <= max_pval)]
+    filtered_total = len(df)
 
     if df.empty:
         raise ValueError("No valid data after low-expression filtering")
@@ -544,8 +784,12 @@ else:
     df["neg_log10_p"] = -np.log10(df[pval_column])
     df["euclidean_distance"] = np.sqrt(df["log2FC"]**2 + df["neg_log10_p"]**2)
 
+    sig_up = df[(df["log2FC"] >= LOG2FC_THRESHOLD) & (df[pval_column] <= PVALUE_THRESHOLD)]
+    sig_down = df[(df["log2FC"] <= -LOG2FC_THRESHOLD) & (df[pval_column] <= PVALUE_THRESHOLD)]
+
     cutoff = np.percentile(df["euclidean_distance"], DISTANCE_PERCENTILE)
     outliers = df[df["euclidean_distance"] >= cutoff]
+    outlier_total = len(outliers)
 
     upregulated = outliers[
         (outliers["log2FC"] >= LOG2FC_THRESHOLD) &
@@ -560,9 +804,22 @@ else:
     df.to_csv(f"{CACHE_DIR}/processed_data.csv", index=False)
     upregulated.to_csv(f"{OUTPUT_DIR}/upregulated_genes.csv", index=False)
     downregulated.to_csv(f"{OUTPUT_DIR}/downregulated_genes.csv", index=False)
+    outliers.to_csv(f"{OUTPUT_DIR}/outlier_genes.csv", index=False)
     mark_step_complete("data_loading")
 
-print(f"  Total: {len(df)} | Up: {len(upregulated)} | Down: {len(downregulated)}")
+print(f"  Total genes in data : {raw_total if raw_total is not None else 'N/A'}")
+print(f"  no. of significant upregulated genes: {len(sig_up) if 'sig_up' in locals() else 'N/A'}")
+print(f"  no. of significant downregulated genes: {len(sig_down) if 'sig_down' in locals() else 'N/A'}")
+print("  ")
+print(
+    f"  no. of genes after filtering log2fc and p value : {filtered_total if filtered_total is not None else len(df)}"
+)
+print(
+    f"  no. of significant upregulated outlier genes: {len(upregulated)}"
+)
+print(
+    f"  no. of significant downregulated outlier genes: {len(downregulated)}"
+)
 
 # ==========================================================
 # API FUNCTIONS
@@ -605,13 +862,14 @@ def ensembl_lookup(gene_id):
     r = safe_request(f"{ENSEMBL_API}/lookup/id/{gene_id}?expand=1", timeout=30)
     return safe_json(r)
 
-def get_string_tsv(gene_id, species=None):
+def get_string_tsv(gene_id, species=None, fallback_ids=None):
     species = species or STRING_SPECIES
     cache_key = f"{gene_id}_{species}"
     if cache_key in string_tsv_cache:
         return string_tsv_cache[cache_key]
 
-    url = f"{STRING_API}/tsv/network?identifiers={gene_id}&species={species}"
+    resolved_id = resolve_string_identifier(gene_id, species=species, fallback_ids=fallback_ids)
+    url = f"{STRING_API}/tsv/network?identifiers={resolved_id}&species={species}"
     params = {"required_score": 400}
     r_net = safe_request(url, params=params, timeout=30)
 
@@ -621,6 +879,57 @@ def get_string_tsv(gene_id, species=None):
 
     string_tsv_cache[cache_key] = r_net.text
     return r_net.text
+
+
+def get_string_ids(identifiers, species=None):
+    species = species or STRING_SPECIES
+    if not identifiers:
+        return {}
+
+    if isinstance(identifiers, str):
+        identifiers = [identifiers]
+
+    result = {}
+    to_query = []
+    for ident in identifiers:
+        cache_key = f"{species}:{ident}"
+        if cache_key in string_id_cache:
+            result[ident] = string_id_cache.get(cache_key)
+        else:
+            to_query.append(ident)
+
+    if to_query:
+        ids_string = "%0d".join(to_query)
+        url = f"{STRING_API}/tsv-no-header/get_string_ids"
+        params = {"identifiers": ids_string, "species": species, "limit": 1}
+        r = safe_request(url, params=params, timeout=30)
+        if r and r.text.strip():
+            for line in r.text.strip().split("\n"):
+                cols = line.split("\t")
+                if len(cols) >= 2:
+                    query = cols[0]
+                    string_id = cols[1]
+                    result[query] = string_id
+                    string_id_cache[f"{species}:{query}"] = string_id
+
+        for ident in to_query:
+            if ident not in result:
+                result[ident] = None
+                string_id_cache[f"{species}:{ident}"] = None
+
+    return result
+
+
+def resolve_string_identifier(gene_id, species=None, fallback_ids=None):
+    candidates = [gene_id]
+    if fallback_ids:
+        candidates.extend([c for c in fallback_ids if c])
+    mapping = get_string_ids(candidates, species=species)
+    for ident in candidates:
+        string_id = mapping.get(ident)
+        if string_id:
+            return string_id
+    return gene_id
 
 
 def get_kegg_pathways(uniprot_id):
@@ -843,8 +1152,9 @@ def get_string_network_cytoscape(gene_id, species=None):
     if cache_key in string_cytoscape_cache:
         return string_cytoscape_cache[cache_key]
 
+    resolved_id = resolve_string_identifier(gene_id, species=species)
     api_url = f"{STRING_API}/tsv/network"
-    params = {"identifiers": gene_id, "species": species, "required_score": 400}
+    params = {"identifiers": resolved_id, "species": species, "required_score": 400}
     
     r = safe_request(api_url, params=params, timeout=30)
     
@@ -949,7 +1259,10 @@ else:
     eggnog_domain_records = []
     interpro_records = []
 
-    all_genes = pd.concat([upregulated, downregulated])
+    if "outliers" in locals() and isinstance(outliers, pd.DataFrame) and not outliers.empty:
+        all_genes = outliers
+    else:
+        all_genes = pd.concat([upregulated, downregulated])
     total_genes = len(all_genes)
 
     for idx, (_, row) in enumerate(all_genes.iterrows(), 1):
@@ -1118,17 +1431,36 @@ else:
                         protein_seq = clean_protein_sequence(protein_seq)
                         sec_pred = {"states": "", "confidence": [], "formatted_lines": [], "method": "none"}
                         tmhmm = None
+                        ph_res = None
                         if not protein_seq or len(protein_seq) < 20:
                             status_parts.append("SEQ:too_short_or_invalid")
                         else:
-                            sec_pred = predict_secondary_structure(
-                                protein_seq,
-                                acc,
-                                gene_dir=gene_dir,
-                                gene_id=gene_id,
-                            )
+                            with ThreadPoolExecutor(max_workers=2) as pool:
+                                sec_future = pool.submit(
+                                    predict_secondary_structure,
+                                    protein_seq,
+                                    acc,
+                                    gene_dir,
+                                    gene_id,
+                                )
+                                ph_future = pool.submit(run_phobius_cached, protein_seq, gene_dir, gene_id)
+                                try:
+                                    sec_pred = sec_future.result() or sec_pred
+                                except Exception as exc:
+                                    print(f"    GOR4/secondary structure failed: {exc}")
+                                try:
+                                    ph_res = ph_future.result()
+                                except Exception as exc:
+                                    print(f"    Phobius failed: {exc}")
+
                             if sec_pred.get("method") == "gor4":
                                 status_parts.append("GOR4")
+                            if ph_res:
+                                if ph_res.get("cached"):
+                                    status_parts.append("PHOBIUS:cached")
+                                else:
+                                    status_parts.append("PHOBIUS")
+
                         record["secondary_structure"] = sec_pred.get("states", "")
                         record["secondary_confidence"] = json.dumps(sec_pred.get("confidence", []))
                         record["psipred_states"] = sec_pred.get("states", "")
@@ -1153,54 +1485,6 @@ else:
                                 record["rapid_fold_model"] = rapid.get("model", "ESMFold")
                                 record["rapid_fold_path"] = rapid.get("pdb_path", "")
                                 status_parts.append("FOLD:rapid")
-
-                            # Phobius submission (simple one-shot, saves text and PNG)
-                            tm_txt = f"{gene_dir}/tmhmm_{gene_id}.txt"
-                            tm_png = f"{gene_dir}/tmhmm_{gene_id}.png"
-                            if os.path.exists(tm_txt) and os.path.exists(tm_png):
-                                status_parts.append("PHOBIUS:cached")
-                            else:
-                                try:
-                                    fasta_payload = f">{gene_id}\n{protein_seq}\n"
-                                    ph_resp = requests.post(
-                                        f"{PHOBIUS_BASE}/run",
-                                        data={
-                                            "sequence": fasta_payload,
-                                            "email": PHOBIUS_EMAIL,
-                                            "format": "grp",
-                                            "toolId": "phobius",
-                                            "stype": "protein",
-                                            "database": "pfam-a",
-                                        },
-                                        timeout=30,
-                                    )
-                                    ph_resp.raise_for_status()
-                                    job_id = ph_resp.text.strip()
-                                    print(f"    Phobius job submitted: {job_id}")
-
-                                    try:
-                                        _wait_for_phobius(job_id)
-                                        print("    Phobius status: FINISHED; fetching outputs")
-                                    except Exception as wait_exc:
-                                        print(f"    Phobius polling failed: {wait_exc}")
-                                        raise
-
-                                    out_txt_url = f"{PHOBIUS_BASE}/result/{job_id}/out"
-                                    out_png_url = f"{PHOBIUS_BASE}/result/{job_id}/visual-png"
-
-                                    txt_bytes = _fetch_phobius_artifact(out_txt_url, binary=True)
-                                    with open(tm_txt, "wb") as f_txt:
-                                        f_txt.write(txt_bytes)
-
-                                    try:
-                                        png_bytes = _fetch_phobius_artifact(out_png_url, binary=True)
-                                        with open(tm_png, "wb") as f_png:
-                                            f_png.write(png_bytes)
-                                    except TimeoutError:
-                                        pass
-                                    status_parts.append("PHOBIUS")
-                                except Exception as exc:
-                                    print(f"    Phobius failed: {exc}")
 
                         # PLACE 2.0-style heuristic: prefer UniProt subcellular location, otherwise infer from TM spans
                         if record.get("subcellular_location"):
@@ -1363,13 +1647,14 @@ else:
 
             
             # STRING Network
-            svg_url = f"{STRING_API}/svg/network?identifiers={gene_id}&species={STRING_SPECIES}"
+            string_identifier = resolve_string_identifier(gene_id, species=STRING_SPECIES, fallback_ids=[acc])
+            svg_url = f"{STRING_API}/svg/network?identifiers={string_identifier}&species={STRING_SPECIES}"
             r_svg = safe_request(svg_url, timeout=30)
             if r_svg and r_svg.content:
                 with open(f"{gene_dir}/string_{gene_id}.svg", "wb") as f:
                     f.write(r_svg.content)
             
-            tsv_text = get_string_tsv(gene_id)
+            tsv_text = get_string_tsv(gene_id, species=STRING_SPECIES, fallback_ids=[acc])
             if tsv_text:
                 lines = tsv_text.strip().split("\n")[1:]
                 edges = []
@@ -1401,6 +1686,7 @@ else:
             save_cache("kegg.json", kegg_cache)
             save_cache("alphafold.json", alphafold_cache)
             save_cache("uniprot_entry.json", uniprot_entry_cache)
+            save_cache("string_ids.json", string_id_cache)
 
     # Save all data
     ann_df = pd.DataFrame(annotation_records)
@@ -1473,6 +1759,7 @@ else:
     save_cache("eggnog.json", eggnog_cache)
     save_cache("kegg.json", kegg_cache)
     save_cache("alphafold.json", alphafold_cache)
+    save_cache("string_ids.json", string_id_cache)
     mark_step_complete("unified_annotation")
 
     print(f"\n  ✓ Annotated {len(annotation_records)} genes")
@@ -1581,7 +1868,9 @@ else:
     
     def build_subnetwork(gene_df, network_folder, filename_prefix):
         gene_list = list(gene_df["gene_id"])
-        genes_string = "%0d".join(gene_list)
+        mapping = get_string_ids(gene_list, species=STRING_SPECIES)
+        resolved = [mapping.get(g) or g for g in gene_list]
+        genes_string = "%0d".join(resolved)
         
         print(f"    {filename_prefix}: ", end="", flush=True)
         

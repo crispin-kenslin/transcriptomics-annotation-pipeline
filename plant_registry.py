@@ -150,6 +150,25 @@ def detect_species_from_genes(
     min_ratio: float = 0.05,
     max_samples: int = 2000,
 ) -> Optional[str]:
+    def _normalize_variants(value: str) -> List[str]:
+        raw = str(value or "").strip()
+        if not raw:
+            return []
+        variants = {raw}
+        variants.add(raw.upper())
+        variants.add(raw.lower())
+        # Strip common transcript/protein suffixes (e.g., .1, -T1, _P01)
+        variants.add(re.sub(r"([._-](T|P)?\d+)$", "", raw, flags=re.IGNORECASE))
+        # Remove version after dot (e.g., AT1G01010.1)
+        variants.add(re.sub(r"\.\d+$", "", raw))
+        # Remove trailing isoform tokens (e.g., _T1, _P1)
+        variants.add(re.sub(r"_[TP]\d+$", "", raw, flags=re.IGNORECASE))
+        # Remove trailing dash isoforms (e.g., -T1)
+        variants.add(re.sub(r"-T\d+$", "", raw, flags=re.IGNORECASE))
+        # Remove non-alphanumeric separators for robust matching
+        variants.add(re.sub(r"[^A-Za-z0-9]", "", raw))
+        return [v for v in variants if v]
+
     sample: List[str] = []
     for value in genes:
         if value is None:
@@ -166,9 +185,12 @@ def detect_species_from_genes(
 
     totals: Dict[str, int] = {cfg.key: 0 for cfg in PLANT_REGISTRY.values()}
     for gene in sample:
+        variants = _normalize_variants(gene)
+        if not variants:
+            continue
         for cfg in PLANT_REGISTRY.values():
             for ptrn in cfg.compiled_patterns():
-                if ptrn.search(gene):
+                if any(ptrn.search(v) for v in variants):
                     totals[cfg.key] += 1
                     break
             else:

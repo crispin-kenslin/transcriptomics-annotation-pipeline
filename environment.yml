@@ -18,5 +18,7 @@ dependencies:
   - statsmodels
   - python-multipart
   - jinja2
+  - openpyxl
+  - xlrd
   - pip:
       - uvicorn[standard]
