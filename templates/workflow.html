@@ -7,8 +7,8 @@
         <h1>From upload to Dash</h1>
         <p class="lede">Each run streams through FastAPI → TAP core → Dash on port 8050, mirroring the way STIFDB exposes curated outcomes.</p>
         <div class="actions" style="margin-top:16px;">
-            <a class="btn primary" href="{{ request.url_for('run_launcher') }}">Launch a run</a>
-            <a class="btn secondary" href="{{ request.url_for('help_page') }}">Read help</a>
+            <a class="btn primary" href="/run">Launch a run</a>
+            <a class="btn secondary" href="/help">Read help</a>
         </div>
     </div>
     <div class="media-slot" data-media="/static/media/images/workflow.jpg">

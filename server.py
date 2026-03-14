@@ -7,8 +7,10 @@ import shutil
 import subprocess
 import re
 import time
+import secrets
+import hashlib
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Lock, Thread
 from typing import Optional, Tuple
@@ -41,10 +43,36 @@ PHOBIUS_RESULT_TIMEOUT = float(os.getenv("PHOBIUS_RESULT_TIMEOUT", "10"))
 PHOBIUS_RESULT_RETRIES = int(os.getenv("PHOBIUS_RESULT_RETRIES", "40"))
 PHOBIUS_RESULT_DELAY = float(os.getenv("PHOBIUS_RESULT_DELAY", "0.5"))
 FAVICON_PATH = ROOT_DIR / "favicon.ico"
+RUN_RETENTION_DAYS = int(os.getenv("RUN_RETENTION_DAYS", "7"))
+RUN_RETENTION_DELTA = timedelta(days=RUN_RETENTION_DAYS)
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 app = FastAPI(title="Transcriptomics Pipeline Web Server", version="1.0.0")
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+
+
+def _extract_client_ip(request: Request) -> str:
+    # Use proxy-forwarded client address when available.
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    if forwarded_for:
+        first = forwarded_for.split(",")[0].strip()
+        if first:
+            return first
+    real_ip = request.headers.get("x-real-ip", "").strip()
+    if real_ip:
+        return real_ip
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _build_access_token(client_ip: str) -> str:
+    seed = f"{time.time_ns()}:{client_ip}:{uuid.uuid4().hex}:{secrets.token_hex(16)}"
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
+def _token_query(access_token: Optional[str]) -> str:
+    return f"?access_token={access_token}" if access_token else ""
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -72,16 +100,73 @@ class RunManager:
                 "status": info.get("status"),
                 "created_at": info.get("created_at").isoformat() if info.get("created_at") else None,
                 "updated_at": info.get("updated_at").isoformat() if info.get("updated_at") else None,
+                "expires_at": info.get("expires_at").isoformat() if info.get("expires_at") else None,
                 "params": info.get("params", {}),
                 "summary": info.get("summary", {}),
                 "returncode": info.get("returncode"),
                 "pid": info.get("pid"),
                 "input_filename": info.get("input_filename"),
+                "owner_ip": info.get("owner_ip"),
+                "access_token": info.get("access_token"),
             }
             meta_path.parent.mkdir(parents=True, exist_ok=True)
             meta_path.write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
         except Exception:
             pass
+
+    def _is_expired(self, info: dict) -> bool:
+        expires_at = info.get("expires_at")
+        if not expires_at:
+            created_at = info.get("created_at") or datetime.utcnow()
+            expires_at = created_at + RUN_RETENTION_DELTA
+            info["expires_at"] = expires_at
+        return datetime.utcnow() >= expires_at
+
+    def _purge_run(self, run_id: str, info: Optional[dict] = None):
+        if info is None:
+            info = self.runs.get(run_id)
+        run_dir = None
+        if info:
+            run_dir = info.get("run_dir")
+        if run_dir and Path(run_dir).exists():
+            try:
+                shutil.rmtree(run_dir, ignore_errors=True)
+            except Exception:
+                pass
+        else:
+            try:
+                shutil.rmtree(RUNS_DIR / run_id, ignore_errors=True)
+            except Exception:
+                pass
+        self.runs.pop(run_id, None)
+        self.procs.pop(run_id, None)
+
+    def _cleanup_expired_runs(self):
+        self._load_all_from_disk()
+        with self.lock:
+            expired_ids = [rid for rid, info in self.runs.items() if self._is_expired(info)]
+            for rid in expired_ids:
+                self._purge_run(rid, self.runs.get(rid))
+
+    def _ensure_access_token_file(self, info: dict):
+        token = info.get("access_token")
+        if not token:
+            return
+        token_text = (
+            f"run_id={info.get('id', '')}\n"
+            f"access_token={token}\n"
+            f"created_at_utc={(info.get('created_at') or datetime.utcnow()).strftime('%Y-%m-%dT%H:%M:%SZ')}\n"
+            f"expires_at_utc={(info.get('expires_at') or datetime.utcnow()).strftime('%Y-%m-%dT%H:%M:%SZ')}\n"
+        )
+        for path in [info.get("run_dir"), info.get("output_dir")]:
+            if not path:
+                continue
+            try:
+                p = Path(path)
+                p.mkdir(parents=True, exist_ok=True)
+                (p / "access_token.txt").write_text(token_text, encoding="utf-8")
+            except Exception:
+                continue
 
     def _load_from_disk(self, run_id: str):
         run_dir = RUNS_DIR / run_id
@@ -108,6 +193,7 @@ class RunManager:
 
         created_at = datetime.fromisoformat(meta.get("created_at")) if meta.get("created_at") else datetime.utcnow()
         updated_at = datetime.fromisoformat(meta.get("updated_at")) if meta.get("updated_at") else created_at
+        expires_at = datetime.fromisoformat(meta.get("expires_at")) if meta.get("expires_at") else (created_at + RUN_RETENTION_DELTA)
         params = meta.get("params") or params_default
         name = meta.get("name") or (params.get("job_name") if isinstance(params, dict) else None)
 
@@ -122,6 +208,7 @@ class RunManager:
             "status": status,
             "created_at": created_at,
             "updated_at": updated_at,
+            "expires_at": expires_at,
             "run_dir": run_dir,
             "output_dir": output_dir,
             "input_path": run_dir / input_filename,
@@ -133,7 +220,18 @@ class RunManager:
             "summary": summary,
             "returncode": meta.get("returncode"),
             "pid": meta.get("pid"),
+            "owner_ip": meta.get("owner_ip", "unknown"),
+            "access_token": meta.get("access_token"),
         }
+
+        if not info.get("access_token"):
+            info["access_token"] = _build_access_token(info.get("owner_ip", "unknown"))
+            self._save_meta(info)
+        self._ensure_access_token_file(info)
+
+        if self._is_expired(info):
+            self._purge_run(run_id, info)
+            return None
 
         with self.lock:
             self.runs[run_id] = info
@@ -148,19 +246,22 @@ class RunManager:
                 continue
             self._load_from_disk(run_id)
 
-    def list_runs(self):
+    def list_runs(self, owner_ip: Optional[str] = None):
+        self._cleanup_expired_runs()
         self._load_all_from_disk()
         with self.lock:
             # prune entries whose run directory was deleted
             to_delete = []
             for rid, info in self.runs.items():
                 run_dir = info.get("run_dir", Path())
-                out_dir = info.get("output_dir", Path())
-                if not run_dir.exists() or not out_dir.exists():
+                if not run_dir.exists():
                     to_delete.append(rid)
             for rid in to_delete:
                 self.runs.pop(rid, None)
-            return sorted(self.runs.values(), key=lambda r: r["created_at"], reverse=True)
+            runs = list(self.runs.values())
+            if owner_ip:
+                runs = [r for r in runs if r.get("owner_ip") == owner_ip]
+            return sorted(runs, key=lambda r: r["created_at"], reverse=True)
 
     def update_run_params(self, run_id: str, updates: dict):
         with self.lock:
@@ -173,13 +274,18 @@ class RunManager:
         return info
 
     def get(self, run_id):
+        self._cleanup_expired_runs()
         with self.lock:
             found = self.runs.get(run_id)
         if found:
+            if self._is_expired(found):
+                with self.lock:
+                    self._purge_run(run_id, found)
+                return None
             return found
         return self._load_from_disk(run_id)
 
-    def create(self, params):
+    def create(self, params, owner_ip: str, access_token: str):
         run_id = uuid.uuid4().hex[:8]
         run_dir = RUNS_DIR / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -191,6 +297,7 @@ class RunManager:
             "status": "queued",
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow(),
+            "expires_at": datetime.utcnow() + RUN_RETENTION_DELTA,
             "run_dir": run_dir,
             "output_dir": run_dir / "pipeline_results",
             "input_path": run_dir / input_filename,
@@ -202,11 +309,14 @@ class RunManager:
             "summary": {},
             "returncode": None,
             "pid": None,
+            "owner_ip": owner_ip,
+            "access_token": access_token,
         }
 
         with self.lock:
             self.runs[run_id] = info
 
+        self._ensure_access_token_file(info)
         self._save_meta(info)
 
         return info
@@ -253,6 +363,8 @@ class RunManager:
                     "DISTANCE_PERCENTILE": str(info["params"]["distance_percentile"]),
                     "USE_ADJUSTED_PVALUE": "1" if info["params"].get("use_fdr") else "0",
                     "RUN_DASH_SERVER": "0",
+                    "REQUEST_CLIENT_IP": str(info["params"].get("client_ip", info.get("owner_ip", "unknown"))),
+                    "REQUEST_CLIENT_API_KEY": str(info["params"].get("client_api_key", "")),
                 }
             )
 
@@ -325,6 +437,7 @@ class RunManager:
                     info["updated_at"] = datetime.utcnow()
                     if process.returncode == 0:
                         info["summary"] = self._collect_summary(info["output_dir"])
+                        self._ensure_access_token_file(info)
                     self.procs.pop(run_id, None)
                 self._save_meta(info)
 
@@ -397,6 +510,18 @@ class RunManager:
 manager = RunManager()
 
 
+def _client_can_access_run(request: Request, info: dict, access_token: Optional[str]) -> bool:
+    token = (access_token or "").strip()
+    if token and secrets.compare_digest(token, str(info.get("access_token", ""))):
+        return True
+    return False
+
+
+def _enforce_run_access(request: Request, info: dict, access_token: Optional[str]):
+    if not _client_can_access_run(request, info, access_token):
+        raise HTTPException(status_code=403, detail="Access denied for this run")
+
+
 def _read_expression_file(path: Path):
     ext = path.suffix.lower()
     if ext == ".csv":
@@ -456,7 +581,8 @@ def _prepare_expression(
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    runs = manager.list_runs()
+    client_ip = _extract_client_ip(request)
+    runs = manager.list_runs(owner_ip=client_ip)
     for r in runs:
         r["name"] = r.get("name") or (r.get("params", {}) or {}).get("job_name")
     return TEMPLATES.TemplateResponse(
@@ -472,7 +598,8 @@ async def home(request: Request):
 
 @app.get("/run", response_class=HTMLResponse)
 async def run_launcher(request: Request):
-    runs = manager.list_runs()
+    client_ip = _extract_client_ip(request)
+    runs = manager.list_runs(owner_ip=client_ip)
     for r in runs:
         r["name"] = r.get("name") or (r.get("params", {}) or {}).get("job_name")
     return TEMPLATES.TemplateResponse(
@@ -488,7 +615,8 @@ async def run_launcher(request: Request):
 
 @app.get("/history", response_class=HTMLResponse)
 async def history_page(request: Request):
-    runs = manager.list_runs()
+    client_ip = _extract_client_ip(request)
+    runs = manager.list_runs(owner_ip=client_ip)
     for r in runs:
         r["name"] = r.get("name") or (r.get("params", {}) or {}).get("job_name")
     return TEMPLATES.TemplateResponse(
@@ -513,7 +641,8 @@ async def species_page(request: Request):
 
 @app.get("/workflow", response_class=HTMLResponse)
 async def workflow_page(request: Request):
-    runs = manager.list_runs()
+    client_ip = _extract_client_ip(request)
+    runs = manager.list_runs(owner_ip=client_ip)
     return TEMPLATES.TemplateResponse(
         "workflow.html",
         {
@@ -543,6 +672,9 @@ async def run_pipeline(
     species_key: str = Form("auto"),
     adj_p_col: str = Form(""),
 ):
+    client_ip = _extract_client_ip(request)
+    client_api_key = hashlib.sha256(f"{client_ip}:{time.time_ns()}".encode("utf-8")).hexdigest()
+    access_token = _build_access_token(client_ip)
     job_name_clean = job_name.strip() or None
     requested_species = (species_key or "auto").strip().lower() or "auto"
     adj_col_clean = (adj_p_col or "").strip()
@@ -558,9 +690,11 @@ async def run_pipeline(
         "job_name": job_name_clean,
         "species_key": requested_species,
         "species_detection": "pending",
+        "client_ip": client_ip,
+        "client_api_key": client_api_key,
     }
 
-    info = manager.create(params)
+    info = manager.create(params, owner_ip=client_ip, access_token=access_token)
 
     original_name = (data_file.filename or "upload.csv").strip()
     suffix = Path(original_name).suffix.lower()
@@ -607,34 +741,46 @@ async def run_pipeline(
             "species_auto_candidate": inferred_species,
             "cleaned_rows": cleaned_rows,
             "adj_p_col": params.get("adj_p_col"),
+            "client_ip": client_ip,
+            "client_api_key": client_api_key,
         },
     )
 
     manager.start(info["id"])
 
-    url = request.url_for("view_run", run_id=info["id"])
-    response = RedirectResponse(url=str(url), status_code=303)
+    url = f"/runs/{info['id']}{_token_query(access_token)}"
+    response = RedirectResponse(url=url, status_code=303)
     response.set_cookie("last_run", info["id"])
+    response.set_cookie("last_run_token", access_token, httponly=True, samesite="lax")
     return response
 
 
 @app.get("/runs/{run_id}", response_class=HTMLResponse)
-async def view_run(request: Request, run_id: str):
+async def view_run(request: Request, run_id: str, access_token: Optional[str] = None):
     info = manager.get(run_id)
     if not info:
         raise HTTPException(status_code=404, detail="Run not found")
+    _enforce_run_access(request, info, access_token)
     info["name"] = info.get("name") or (info.get("params", {}) or {}).get("job_name")
+    token_for_view = access_token or info.get("access_token")
     return TEMPLATES.TemplateResponse(
         "run.html",
-        {"request": request, "run": info, "species_params": info.get("params", {})},
+        {
+            "request": request,
+            "run": info,
+            "species_params": info.get("params", {}),
+            "run_access_token": token_for_view,
+            "run_access_qs": _token_query(token_for_view),
+        },
     )
 
 
 @app.get("/runs/{run_id}/status", response_class=JSONResponse)
-async def run_status(run_id: str):
+async def run_status(request: Request, run_id: str, access_token: Optional[str] = None):
     info = manager.get(run_id)
     if not info:
         raise HTTPException(status_code=404, detail="Run not found")
+    _enforce_run_access(request, info, access_token)
     return {
         "id": run_id,
         "status": info["status"],
@@ -644,15 +790,20 @@ async def run_status(run_id: str):
 
 
 @app.get("/runs/{run_id}/logs", response_class=PlainTextResponse)
-async def stream_logs(run_id: str):
+async def stream_logs(request: Request, run_id: str, access_token: Optional[str] = None):
     info = manager.get(run_id)
     if not info:
         raise HTTPException(status_code=404, detail="Run not found")
+    _enforce_run_access(request, info, access_token)
     return manager.logs_as_text(run_id)
 
 
 @app.post("/runs/{run_id}/stop", response_class=JSONResponse)
-async def stop_run(run_id: str):
+async def stop_run(request: Request, run_id: str, access_token: Optional[str] = None):
+    info = manager.get(run_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Run not found")
+    _enforce_run_access(request, info, access_token)
     try:
         stopped = manager.stop(run_id)
     except ValueError:
@@ -663,16 +814,18 @@ async def stop_run(run_id: str):
 
 
 @app.get("/runs/{run_id}/results", response_class=HTMLResponse)
-async def view_results(request: Request, run_id: str):
+async def view_results(request: Request, run_id: str, access_token: Optional[str] = None):
     info = manager.get(run_id)
     if not info:
         raise HTTPException(status_code=404, detail="Run not found")
+    _enforce_run_access(request, info, access_token)
     if info["status"] != "completed":
         raise HTTPException(status_code=400, detail="Run has not completed yet")
 
     info["name"] = info.get("name") or (info.get("params", {}) or {}).get("job_name")
 
     output_dir = info["output_dir"]
+    manager._ensure_access_token_file(info)
 
     def _head(path, n=25):
         if path.exists() and path.stat().st_size > 0:
@@ -757,15 +910,19 @@ async def view_results(request: Request, run_id: str):
         "run_id": run_id,
         "run_duration": run_duration,
         "species_params": info.get("params", {}),
+        "run_access_token": access_token or info.get("access_token"),
+        "run_access_qs": _token_query(access_token or info.get("access_token")),
+        "expires_at": info.get("expires_at"),
     }
     return TEMPLATES.TemplateResponse("results.html", context)
 
 
 @app.get("/runs/{run_id}/files/{file_path:path}")
-async def serve_run_file(run_id: str, file_path: str):
+async def serve_run_file(request: Request, run_id: str, file_path: str, access_token: Optional[str] = None):
     info = manager.get(run_id)
     if not info:
         raise HTTPException(status_code=404, detail="Run not found")
+    _enforce_run_access(request, info, access_token)
 
     requested = (info["output_dir"] / file_path).resolve()
     try:
@@ -782,13 +939,15 @@ async def serve_run_file(run_id: str, file_path: str):
 @app.get("/runs/{run_id}/download-zip")
 @app.get("/runs/{run_id}/download-zip/")
 @app.get("/runs/{run_id}/download_zip")
-async def download_zip(run_id: str):
+async def download_zip(request: Request, run_id: str, access_token: Optional[str] = None):
     info = manager.get(run_id)
     if not info:
         raise HTTPException(status_code=404, detail="Run not found")
+    _enforce_run_access(request, info, access_token)
     output_dir = info["output_dir"]
     if not output_dir.exists():
         raise HTTPException(status_code=404, detail="Output not found")
+    manager._ensure_access_token_file(info)
 
     tmpdir = tempfile.mkdtemp()
     zip_base = Path(tmpdir) / run_id
@@ -802,10 +961,11 @@ async def download_zip(run_id: str):
 
 
 @app.get("/runs/{run_id}/downloads", response_class=HTMLResponse)
-async def view_downloads(request: Request, run_id: str):
+async def view_downloads(request: Request, run_id: str, access_token: Optional[str] = None):
     info = manager.get(run_id)
     if not info:
         raise HTTPException(status_code=404, detail="Run not found")
+    _enforce_run_access(request, info, access_token)
     if info["status"] != "completed":
         raise HTTPException(status_code=400, detail="Run has not completed yet")
 
@@ -907,18 +1067,21 @@ async def view_downloads(request: Request, run_id: str):
         "eggnog_dom_summary": eggnog_dom_summary,
         "interpro_summary": interpro_summary,
         "species_params": info.get("params", {}),
+        "run_access_qs": _token_query(access_token or info.get("access_token")),
     }
     return TEMPLATES.TemplateResponse("downloads.html", context)
 
 
 @app.get("/runs/open")
-async def open_run(run_id: str):
+async def open_run(request: Request, run_id: str, access_token: Optional[str] = None):
     info = manager.get(run_id)
     if not info:
         raise HTTPException(status_code=404, detail="Run not found")
+    _enforce_run_access(request, info, access_token)
     if info["status"] != "completed":
         raise HTTPException(status_code=404, detail="Run has not completed yet")
-    return RedirectResponse(url=f"/runs/{run_id}/results", status_code=303)
+    token = access_token or info.get("access_token")
+    return RedirectResponse(url=f"/runs/{run_id}/results{_token_query(token)}", status_code=303)
 
 
 def _safe_read_csv(path: Path):
@@ -1055,10 +1218,11 @@ def _clean_json(obj):
 
 
 @app.get("/runs/{run_id}/volcano", response_class=JSONResponse)
-async def volcano_data(run_id: str):
+async def volcano_data(request: Request, run_id: str, access_token: Optional[str] = None):
     info = manager.get(run_id)
     if not info:
         raise HTTPException(status_code=404, detail="Run not found")
+    _enforce_run_access(request, info, access_token)
     if info["status"] != "completed":
         raise HTTPException(status_code=400, detail="Run not completed")
 
@@ -1202,10 +1366,11 @@ async def volcano_data(run_id: str):
 
 
 @app.get("/runs/{run_id}/gene/{gene_id}", response_class=JSONResponse)
-async def gene_detail(run_id: str, gene_id: str):
+async def gene_detail(request: Request, run_id: str, gene_id: str, access_token: Optional[str] = None):
     info = manager.get(run_id)
     if not info:
         raise HTTPException(status_code=404, detail="Run not found")
+    _enforce_run_access(request, info, access_token)
     if info["status"] != "completed":
         raise HTTPException(status_code=400, detail="Run not completed")
 
@@ -1406,10 +1571,11 @@ async def gene_detail(run_id: str, gene_id: str):
 
 
 @app.post("/runs/{run_id}/gene/{gene_id}/phobius", response_class=JSONResponse)
-async def gene_phobius(run_id: str, gene_id: str, force: bool = False):
+async def gene_phobius(request: Request, run_id: str, gene_id: str, force: bool = False, access_token: Optional[str] = None):
     info = manager.get(run_id)
     if not info:
         raise HTTPException(status_code=404, detail="Run not found")
+    _enforce_run_access(request, info, access_token)
     if info["status"] != "completed":
         raise HTTPException(status_code=400, detail="Run not completed")
 
@@ -1464,10 +1630,11 @@ async def gene_phobius(run_id: str, gene_id: str, force: bool = False):
 
 
 @app.post("/runs/{run_id}/gene/{gene_id}/fold", response_class=JSONResponse)
-async def gene_fold(run_id: str, gene_id: str):
+async def gene_fold(request: Request, run_id: str, gene_id: str, access_token: Optional[str] = None):
     info = manager.get(run_id)
     if not info:
         raise HTTPException(status_code=404, detail="Run not found")
+    _enforce_run_access(request, info, access_token)
     if info["status"] != "completed":
         raise HTTPException(status_code=400, detail="Run not completed")
 

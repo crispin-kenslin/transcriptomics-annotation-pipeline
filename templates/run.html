@@ -56,8 +56,8 @@
         {% if run.status in ["queued", "running"] %}
         <button id="stop-btn" class="btn secondary" type="button">Stop run</button>
         {% endif %}
-        <a id="results-link" class="btn secondary" href="/runs/{{ run.id }}/results" style="display: none;">View results</a>
-        <a class="link" href="/runs/{{ run.id }}/logs" target="_blank">Open full log</a>
+        <a id="results-link" class="btn secondary" href="/runs/{{ run.id }}/results{{ run_access_qs }}" style="display: none;">View results</a>
+        <a class="link" href="/runs/{{ run.id }}/logs{{ run_access_qs }}" target="_blank">Open full log</a>
     </div>
     <div class="callout" style="margin-top:18px;">
         The FastAPI service captures raw logs in <strong>runs/{{ run.id }}/pipeline.log</strong>. Share that file when asking for help—the structure matches UniProt/InterPro submission diagnostics.
@@ -66,6 +66,8 @@
 
 <script>
     const runId = "{{ run.id }}";
+    const runAccessToken = "{{ run_access_token or '' }}";
+    const runAccessQs = runAccessToken ? `?access_token=${encodeURIComponent(runAccessToken)}` : '';
     const logBox = document.getElementById("log-text");
     const statusText = document.getElementById("status-text");
     const resultsLink = document.getElementById("results-link");
@@ -73,7 +75,7 @@
 
     async function poll() {
         try {
-            const res = await fetch(`/runs/${runId}/status`);
+            const res = await fetch(`/runs/${runId}/status${runAccessQs}`);
             if (!res.ok) return;
             const data = await res.json();
             statusText.textContent = data.status;
@@ -82,7 +84,7 @@
                 logBox.textContent = data.logs.join("\n") || "Waiting for output...";
             }
             if (data.status === "completed") {
-                window.location.assign(`/runs/${runId}/results`);
+                window.location.assign(`/runs/${runId}/results${runAccessQs}`);
                 return;
             }
             if (data.status === "failed") {
@@ -101,7 +103,7 @@
             stopBtn.disabled = true;
             stopBtn.textContent = 'Stopping...';
             try {
-                const res = await fetch(`/runs/${runId}/stop`, { method: 'POST' });
+                const res = await fetch(`/runs/${runId}/stop${runAccessQs}`, { method: 'POST' });
                 if (!res.ok) throw new Error('Stop failed');
                 statusText.textContent = 'stopped';
                 statusText.className = 'status stopped';

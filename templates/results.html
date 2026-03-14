@@ -27,6 +27,11 @@
             <p class="strong">{{ run_job_name or run.name or run.params.job_name or '—' }}</p>
             <p class="hint">Started {{ run.created_at.strftime('%Y-%m-%d %H:%M') }} UTC</p>
         </div>
+        <div class="status-card">
+            <p class="hint">Access token</p>
+            <p class="strong" style="word-break: break-all;">{{ run_access_token }}</p>
+            <p class="hint">Expires {{ expires_at.strftime('%Y-%m-%d %H:%M') if expires_at else 'in 7 days' }} UTC</p>
+        </div>
     </div>
     <div class="stat-board">
         <div class="stat-chip"><p class="hint">Total genes</p><h3>{{ summary.total_genes | default('0') }}</h3><span>Cleaned rows: {{ species.cleaned_rows or '—' }}</span></div>
@@ -67,8 +72,8 @@
             <div class="string-pill {% if 'down' in (net.label | lower) %}string-pill--down{% else %}string-pill--up{% endif %}">
                 <span class="string-pill__label">{{ net.label }}</span>
                 <div class="string-pill__actions">
-                    <a class="btn secondary" href="{{ net.view_url }}" target="_blank" rel="noreferrer">View</a>
-                    <a class="btn" href="{{ net.download_url }}" target="_blank" rel="noreferrer">Download</a>
+                    <a class="btn secondary" href="{{ net.view_url }}{{ run_access_qs }}" target="_blank" rel="noreferrer">View</a>
+                    <a class="btn" href="{{ net.download_url }}{{ run_access_qs }}" target="_blank" rel="noreferrer">Download</a>
                 </div>
             </div>
             {% endfor %}
@@ -99,8 +104,9 @@
         </div>
     </div>
     <div class="actions">
-        <a class="btn secondary" href="/runs/{{ run_id }}/downloads" target="_blank">Open downloads & tables</a>
-        <a class="btn" href="/runs/{{ run_id }}/download-zip">Download all output files (zip)</a>
+        <a class="btn secondary" href="/runs/{{ run_id }}/downloads{{ run_access_qs }}" target="_blank">Open downloads & tables</a>
+        <a class="btn" href="/runs/{{ run_id }}/download-zip{{ run_access_qs }}">Download all output files (zip)</a>
+        <a class="btn secondary" href="/runs/{{ run_id }}/files/access_token.txt{{ run_access_qs }}" download>Download access token (.txt)</a>
     </div>
     <div class="callout" style="margin-top:16px;">Downloads reflect the same taxonomy-first order you see on UniProt or InterPro: annotations, GO splits, domains, STRING assets, and per-gene folders stay separated for clean archival.</div>
 </section>
@@ -110,6 +116,14 @@
 <script src="https://cdn.jsdelivr.net/npm/ngl@2.0.0-dev.36/dist/ngl.js"></script>
 <script>
     const runId = "{{ run_id }}";
+    const runAccessToken = "{{ run_access_token or '' }}";
+    const runAccessQs = runAccessToken ? `?access_token=${encodeURIComponent(runAccessToken)}` : '';
+    function addToken(url) {
+        if (!url) return url;
+        if (!url.startsWith('/runs/')) return url;
+        if (!runAccessQs) return url;
+        return url.includes('?') ? `${url}&access_token=${encodeURIComponent(runAccessToken)}` : `${url}${runAccessQs}`;
+    }
     const volcanoHint = document.getElementById('volcano-hint');
     const geneTitle = document.getElementById('gene-title');
     const genePanel = document.getElementById('gene-panel');
@@ -246,7 +260,7 @@
 
     async function loadVolcano() {
         try {
-            const res = await fetch(`/runs/${runId}/volcano`);
+            const res = await fetch(`/runs/${runId}/volcano${runAccessQs}`);
             const data = await res.json();
             const pts = data.points || [];
             volcanoPoints = pts;
@@ -423,7 +437,7 @@
             container.innerHTML = '<p class="hint">No ESMFold structure available.</p>';
             return;
         }
-        fetch(pdbUrl)
+        fetch(addToken(pdbUrl))
             .then(r => r.text())
             .then(pdbText => {
                 const stage = new NGL.Stage(container, { backgroundColor: '#ffffff' });
@@ -461,7 +475,7 @@
 
             <h3>Sequence</h3>
             <pre class="fasta-block">${detail.plain_sequence || detail.fasta || 'Not available'}</pre>
-            ${detail.fasta_path ? `<a class="link" href="${detail.fasta_path}" target="_blank">Download FASTA</a>` : ''}
+            ${detail.fasta_path ? `<a class="link" href="${addToken(detail.fasta_path)}" target="_blank">Download FASTA</a>` : ''}
 
             <h3>Secondary structure</h3>
             <p class="hint">Secondary structure predictions from GOR4 algorithm.</p>
@@ -471,16 +485,16 @@
             ` : `<pre class="track-block">${detail.psipred_states || detail.secondary_structure || 'No prediction'}</pre>`}
             ${(detail.gor4_state_img || detail.gor4_profile_img || detail.gor4_text_url) ? `
                 <div class="gor4-media">
-                    ${detail.gor4_state_img ? `<img src="${detail.gor4_state_img}" class="gor4-img" alt="GOR4 residue state plot">` : ''}
-                    ${detail.gor4_profile_img ? `<img src="${detail.gor4_profile_img}" class="gor4-img" alt="GOR4 confidence profile">` : ''}
+                    ${detail.gor4_state_img ? `<img src="${addToken(detail.gor4_state_img)}" class="gor4-img" alt="GOR4 residue state plot">` : ''}
+                    ${detail.gor4_profile_img ? `<img src="${addToken(detail.gor4_profile_img)}" class="gor4-img" alt="GOR4 confidence profile">` : ''}
                 </div>
-                ${detail.gor4_text_url ? `<a class="link" href="${detail.gor4_text_url}" target="_blank" rel="noopener">Open GOR4 residue table</a>` : ''}
+                ${detail.gor4_text_url ? `<a class="link" href="${addToken(detail.gor4_text_url)}" target="_blank" rel="noopener">Open GOR4 residue table</a>` : ''}
             ` : ''}
 
             <h3>Transmembrane Helix Prediction</h3>
-            ${detail.tmhmm_plot ? `<img src="${detail.tmhmm_plot}" class="tmhmm-img" alt="Phobius plot">` : '<p class="hint">No TM plot available.</p>'}
+            ${detail.tmhmm_plot ? `<img src="${addToken(detail.tmhmm_plot)}" class="tmhmm-img" alt="Phobius plot">` : '<p class="hint">No TM plot available.</p>'}
             ${detail.tmhmm_text ? `<pre class="track-block">${detail.tmhmm_text}</pre>` : '<p class="hint">No TM text available.</p>'}
-            ${detail.tmhmm_text_url ? `<a class="link" href="${detail.tmhmm_text_url}" target="_blank">Download TM text</a>` : ''}
+            ${detail.tmhmm_text_url ? `<a class="link" href="${addToken(detail.tmhmm_text_url)}" target="_blank">Download TM text</a>` : ''}
 
             <h3>Orthologous groups</h3>
             ${Array.isArray(detail.orthologs) && detail.orthologs.length ? `<table class="data-table"><thead><tr><th>EggNOG/OG ID</th></tr></thead><tbody>${detail.orthologs.map(o => `<tr><td>${o}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">No orthologous group IDs found.</p>'}
@@ -519,7 +533,7 @@
                     <p class="hint"><strong>AlphaFold</strong></p>
                     <div class="hint">Confidence: ${detail.alphafold_confidence || 'N/A'} | Version: ${detail.alphafold_version || 'N/A'}</div>
                     <div id="ngl-viewer" style="width:100%; height:60vh; max-height:640px; border:1px solid var(--border); border-radius:8px;"></div>
-                    ${detail.pdb_path ? `<a class="link" href="${detail.pdb_path}" target="_blank">Download PDB</a>` : ''}
+                    ${detail.pdb_path ? `<a class="link" href="${addToken(detail.pdb_path)}" target="_blank">Download PDB</a>` : ''}
                     ${detail.uniprot_id ? `<div style="margin-top:8px;"><a class="btn secondary" href="https://alphafold.ebi.ac.uk/search/text/${encodeURIComponent((detail.uniprot_id || '').toUpperCase())}" target="_blank" rel="noreferrer">View on AlphaFold</a></div>` : ''}
                     ${detail.uniprot_id ? `
                         <div class="hint" style="margin-top:10px;"><strong>Residue level data</strong> · <a class="link" href="https://alphasync.stjude.org/display/${encodeURIComponent((detail.uniprot_id || '').toUpperCase())}" target="_blank" rel="noreferrer">Open on AlphaSync</a></div>
@@ -528,7 +542,7 @@
                 </div>
                 <div class="field" style="width:100%; display:flex; flex-direction:column; gap:6px;">
                     <p class="hint"><strong>Fold prediction</strong></p>
-                    ${detail.rapid_fold_pdb ? `<a class="link" href="${detail.rapid_fold_pdb}" target="_blank">Download ESMFold PDB</a>` : ''}
+                    ${detail.rapid_fold_pdb ? `<a class="link" href="${addToken(detail.rapid_fold_pdb)}" target="_blank">Download ESMFold PDB</a>` : ''}
                     ${paeUrl ? `
                         <div style="margin-top:10px;">
                             <p class="hint">ESMFold (sequence-based)</p>
@@ -546,7 +560,7 @@
 
             <h3>STRING network</h3>
             <div class="string-grid">
-                ${detail.string_svg_url ? `<div class="string-panel string-panel--svg"><img src="${detail.string_svg_url}" class="string-img"/></div>` : '<div class="string-panel string-panel--placeholder"><p class="hint">No STRING SVG available.</p></div>'}
+                ${detail.string_svg_url ? `<div class="string-panel string-panel--svg"><img src="${addToken(detail.string_svg_url)}" class="string-img"/></div>` : '<div class="string-panel string-panel--placeholder"><p class="hint">No STRING SVG available.</p></div>'}
                 <div class="string-panel string-panel--cyto">
                     <div class="zoom-controls" id="cyto-controls">
                         <button type="button" data-zoom="in">＋</button>
@@ -564,7 +578,7 @@
                 ${detail.string_edges.slice(0,50).map(e => `<tr><td>${e.source || ''}</td><td>${e.target || ''}</td><td>${e.combined_score?.toFixed ? e.combined_score.toFixed(3) : (e.combined_score || '')}</td></tr>`).join('')}
                 </tbody></table>
             ` : '<p class="hint">No interaction scores available.</p>'}
-            ${detail.string_edges_path ? `<a class="link" href="${detail.string_edges_path}" target="_blank">Download full interaction table</a>` : ''}
+            ${detail.string_edges_path ? `<a class="link" href="${addToken(detail.string_edges_path)}" target="_blank">Download full interaction table</a>` : ''}
         `;
 
         const queryId = detail.uniprot_id || detail.gene_id;
@@ -584,7 +598,7 @@
     async function loadGene(geneId) {
         genePanel.innerHTML = '<p class="hint">Loading gene details...</p>';
         try {
-            const res = await fetch(`/runs/${runId}/gene/${geneId}`);
+            const res = await fetch(`/runs/${runId}/gene/${geneId}${runAccessQs}`);
             if (!res.ok) throw new Error('Gene not found');
             const detail = await res.json();
             renderGene(detail);
@@ -624,5 +638,36 @@
     loadVolcano();
     setupZoomControls();
     setZoomControlsEnabled(false);
+
+    async function autoDownloadAccessToken() {
+        const tokenPath = `/runs/${runId}/files/access_token.txt${runAccessQs}`;
+        try {
+            const resp = await fetch(tokenPath, { cache: 'no-store' });
+            if (!resp.ok) throw new Error('Token file not ready');
+            const blob = await resp.blob();
+            const blobUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = blobUrl;
+            a.download = 'access_token.txt';
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => {
+                URL.revokeObjectURL(blobUrl);
+                a.remove();
+            }, 800);
+        } catch (err) {
+            // Fallback to direct link click and a delayed retry.
+            const a = document.createElement('a');
+            a.href = tokenPath;
+            a.download = 'access_token.txt';
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => a.remove(), 500);
+            setTimeout(() => autoDownloadAccessToken().catch(() => {}), 1500);
+        }
+    }
+    autoDownloadAccessToken().catch(() => {});
 </script>
 {% endblock %}

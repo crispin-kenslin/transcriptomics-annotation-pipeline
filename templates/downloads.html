@@ -10,7 +10,7 @@
         </div>
     </div>
     <div class="actions">
-        <a class="btn" href="/runs/{{ run.id }}/download-zip">Download all (zip)</a>
+        <a class="btn" href="/runs/{{ run.id }}/download-zip{{ run_access_qs }}">Download all (zip)</a>
     </div>
     {% if downloads or networks %}
     <div class="downloads-grid" style="margin-top:18px;">
@@ -18,7 +18,7 @@
         <div class="download-card">
             <h3>{{ f.label }}</h3>
             <span>CSV asset</span>
-            <a class="btn secondary" href="{{ f.path }}" download>Download</a>
+            <a class="btn secondary" href="{{ f.path }}{{ run_access_qs }}" download>Download</a>
         </div>
         {% endfor %}
         {% if networks %}
@@ -27,8 +27,8 @@
                 <h3>{{ net.label }}</h3>
                 <span>STRING SVG</span>
                 <div class="actions">
-                    <a class="btn secondary" href="{{ net.view_url }}" target="_blank">View</a>
-                    <a class="btn secondary" href="{{ net.download_url }}" download>Download</a>
+                    <a class="btn secondary" href="{{ net.view_url }}{{ run_access_qs }}" target="_blank">View</a>
+                    <a class="btn secondary" href="{{ net.download_url }}{{ run_access_qs }}" download>Download</a>
                 </div>
             </div>
             {% endfor %}

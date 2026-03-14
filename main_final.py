@@ -3,6 +3,7 @@ OPTIMIZED TRANSCRIPTOMICS ANALYSIS WEB SERVER WITH UNIFIED PROCESSING
 """
 
 import os
+import sys
 import time
 import json
 import base64
@@ -25,6 +26,18 @@ import warnings
 import re
 from statsmodels.stats.multitest import multipletests
 warnings.filterwarnings('ignore')
+
+# Prevent Windows console encoding crashes when API text contains non-ASCII chars.
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 
 def env_float(key, default):
@@ -88,13 +101,15 @@ KEGG_API = "https://rest.kegg.jp"
 ALPHASYNC_BASE = "https://alphasync.stjude.org/api/v1"
 PHOBIUS_BASE = "https://www.ebi.ac.uk/Tools/services/rest/phobius"
 PHOBIUS_EMAIL = os.getenv("PHOBIUS_EMAIL", "wp-angular-web@ebi.ac.uk")
-PHOBIUS_MAX_WAIT = env_float("PHOBIUS_MAX_WAIT", 45.0)
+PHOBIUS_MAX_WAIT = env_float("PHOBIUS_MAX_WAIT", 120.0)
 PHOBIUS_POLL_INTERVAL = env_float("PHOBIUS_POLL_INTERVAL", 0.5)
 PHOBIUS_STATUS_TIMEOUT = env_float("PHOBIUS_STATUS_TIMEOUT", 10.0)
 PHOBIUS_RESULT_TIMEOUT = env_float("PHOBIUS_RESULT_TIMEOUT", 10.0)
-PHOBIUS_RESULT_RETRIES = int(os.getenv("PHOBIUS_RESULT_RETRIES", "40"))
+PHOBIUS_RESULT_RETRIES = int(os.getenv("PHOBIUS_RESULT_RETRIES", "80"))
 PHOBIUS_RESULT_DELAY = env_float("PHOBIUS_RESULT_DELAY", 0.5)
 PHOBIUS_FETCH_PNG = True
+REQUEST_CLIENT_IP = os.getenv("REQUEST_CLIENT_IP", "unknown")
+REQUEST_CLIENT_API_KEY = os.getenv("REQUEST_CLIENT_API_KEY", "")
 ENABLE_GOR4 = env_bool("ENABLE_GOR4", True)
 GOR4_POST_URL = "https://npsa-prabi.ibcp.fr/cgi-bin/secpred_gor4.pl"
 GOR4_TMP_BASE = "https://npsa-prabi.ibcp.fr/tmp"
@@ -153,6 +168,13 @@ def mark_step_complete(step_name):
     with open(marker, 'w') as f:
         f.write(str(time.time()))
 
+
+def _timed_call(fn, *args, **kwargs):
+    started = time.perf_counter()
+    result = fn(*args, **kwargs)
+    elapsed = time.perf_counter() - started
+    return result, elapsed
+
 # ==========================================================
 # UTILITY FUNCTIONS
 # ==========================================================
@@ -191,8 +213,14 @@ def create_session():
 SESSION = create_session()
 
 def safe_request(url, params=None, timeout=30):
+    headers = {
+        "User-Agent": f"tap-pipeline/1.0 client-ip/{REQUEST_CLIENT_IP}",
+        "X-Client-IP": REQUEST_CLIENT_IP,
+    }
+    if REQUEST_CLIENT_API_KEY:
+        headers["X-Client-Api-Key"] = REQUEST_CLIENT_API_KEY
     try:
-        r = SESSION.get(url, params=params, timeout=timeout)
+        r = SESSION.get(url, params=params, timeout=timeout, headers=headers)
         if r.ok and r.text.strip():
             return r
     except Exception as e:
@@ -473,12 +501,22 @@ def run_phobius_cached(seq: str, gene_dir: str, gene_id: str):
     )
     ph_resp.raise_for_status()
     job_id = ph_resp.text.strip()
-    _wait_for_phobius(job_id)
+    status_wait_error = None
+    try:
+        _wait_for_phobius(job_id)
+    except TimeoutError as exc:
+        # Status endpoint is sometimes unreliable; continue to artifact polling.
+        status_wait_error = exc
 
     out_txt_url = f"{PHOBIUS_BASE}/result/{job_id}/out"
     out_png_url = f"{PHOBIUS_BASE}/result/{job_id}/visual-png"
 
-    txt_bytes = _fetch_phobius_artifact(out_txt_url, binary=True)
+    try:
+        txt_bytes = _fetch_phobius_artifact(out_txt_url, binary=True)
+    except Exception:
+        if status_wait_error:
+            raise status_wait_error
+        raise
     txt_path.write_bytes(txt_bytes)
     png_bytes = None
     if PHOBIUS_FETCH_PNG:
@@ -714,7 +752,7 @@ if is_step_complete_with_files("data_loading", [
     f"{OUTPUT_DIR}/downregulated_genes.csv",
     f"{OUTPUT_DIR}/outlier_genes.csv"
 ]):
-    print("  ✓ Using cached data")
+    print("  [OK] Using cached data")
     try:
         raw_total = len(read_expression_file(EXPR_FILE))
     except Exception:
@@ -834,6 +872,12 @@ def uniprot_search(gene_id, cache):
         f"(gene:{gene_id}) AND {tax_filter}",
         f"{gene_id} AND {tax_filter}"
     ]
+    # Fallback queries without taxon restriction to tolerate mixed-species IDs in one upload.
+    queries.extend([
+        f"gene_exact:{gene_id}",
+        f"gene:{gene_id}",
+        f"{gene_id}",
+    ])
     
     for query in queries:
         params = {"query": query, "format": "json", "size": 1}
@@ -1245,7 +1289,7 @@ if is_step_complete_with_files("unified_annotation", [
     f"{OUTPUT_DIR}/eggnog_domains.csv",
     f"{OUTPUT_DIR}/interpro_domains.csv"
 ]):
-    print("  ✓ Using cached annotations")
+    print("  [OK] Using cached annotations")
     ann_df = pd.read_csv(f"{OUTPUT_DIR}/annotations.csv")
     kegg_df = pd.read_csv(f"{OUTPUT_DIR}/kegg_pathways.csv")
     eggnog_go_df = pd.read_csv(f"{OUTPUT_DIR}/eggnog_go_terms.csv")
@@ -1328,12 +1372,12 @@ else:
                 status_parts.append("ENS")
             
             # UNIPROT
-            acc = uniprot_search(gene_id, uniprot_cache)
+            acc, up_elapsed = _timed_call(uniprot_search, gene_id, uniprot_cache)
             record["uniprot_id"] = acc
-            print(f"UniProt → {acc}")
+            print(f"UniProt -> {acc}")
             
             if acc:
-                status_parts.append(f"UP:{acc}")
+                status_parts.append(f"UP:{acc}({up_elapsed:.2f}s)")
                 uni = uniprot_entry(acc)
 
                 if uni and isinstance(uni, dict):
@@ -1413,12 +1457,14 @@ else:
                     # =============================
                     # FASTA download
                     # =============================
-                    if download_file(
+                    fasta_ok, fasta_elapsed = _timed_call(
+                        download_file,
                         f"{UNIPROT_ENTRY}/{acc}.fasta",
                         f"{gene_dir}/protein_{gene_id}.fasta",
-                        binary=False
-                    ):
-                        status_parts.append("FASTA")
+                        binary=False,
+                    )
+                    if fasta_ok:
+                        status_parts.append(f"FASTA({fasta_elapsed:.2f}s)")
 
                     protein_seq = ""
                     try:
@@ -1437,29 +1483,42 @@ else:
                         else:
                             with ThreadPoolExecutor(max_workers=2) as pool:
                                 sec_future = pool.submit(
+                                    _timed_call,
                                     predict_secondary_structure,
                                     protein_seq,
                                     acc,
                                     gene_dir,
                                     gene_id,
                                 )
-                                ph_future = pool.submit(run_phobius_cached, protein_seq, gene_dir, gene_id)
+                                ph_future = pool.submit(_timed_call, run_phobius_cached, protein_seq, gene_dir, gene_id)
+                                sec_elapsed = None
+                                ph_elapsed = None
                                 try:
-                                    sec_pred = sec_future.result() or sec_pred
+                                    sec_result = sec_future.result()
+                                    if isinstance(sec_result, tuple) and len(sec_result) == 2:
+                                        sec_pred = sec_result[0] or sec_pred
+                                        sec_elapsed = sec_result[1]
+                                    else:
+                                        sec_pred = sec_result or sec_pred
                                 except Exception as exc:
                                     print(f"    GOR4/secondary structure failed: {exc}")
                                 try:
-                                    ph_res = ph_future.result()
+                                    ph_result = ph_future.result()
+                                    if isinstance(ph_result, tuple) and len(ph_result) == 2:
+                                        ph_res = ph_result[0]
+                                        ph_elapsed = ph_result[1]
+                                    else:
+                                        ph_res = ph_result
                                 except Exception as exc:
                                     print(f"    Phobius failed: {exc}")
 
                             if sec_pred.get("method") == "gor4":
-                                status_parts.append("GOR4")
+                                status_parts.append(f"GOR4({(sec_elapsed or 0.0):.2f}s)")
                             if ph_res:
                                 if ph_res.get("cached"):
-                                    status_parts.append("PHOBIUS:cached")
+                                    status_parts.append(f"PHOBIUS:cached({(ph_elapsed or 0.0):.2f}s)")
                                 else:
-                                    status_parts.append("PHOBIUS")
+                                    status_parts.append(f"PHOBIUS({(ph_elapsed or 0.0):.2f}s)")
 
                         record["secondary_structure"] = sec_pred.get("states", "")
                         record["secondary_confidence"] = json.dumps(sec_pred.get("confidence", []))
@@ -1497,19 +1556,20 @@ else:
                     # =============================
                     # AlphaFold
                     # =============================
-                    af_result = download_alphafold_pdb(acc,f"{gene_dir}/structure_{gene_id}.pdb")
+                    af_result, af_elapsed = _timed_call(download_alphafold_pdb, acc, f"{gene_dir}/structure_{gene_id}.pdb")
 
                     if af_result:
                         af_info = get_alphafold_info(acc)
                         if af_info:
                             record["alphafold_confidence"] = af_info.get("confidence", "N/A")
                         record["alphafold_version"] = af_result["model_version"]
-                        status_parts.append("AF")
+                        status_parts.append(f"AF({af_elapsed:.2f}s)")
 
 
                     # =============================
                     # KEGG
                     # =============================
+                    kegg_started = time.perf_counter()
                     kegg_genes = uniprot_to_kegg_genes(acc)
 
                     for kegg_gene in kegg_genes:
@@ -1527,11 +1587,12 @@ else:
                                 })
 
                     if kegg_genes:
-                        status_parts.append(f"KEGG:{len(kegg_genes)}")
+                        status_parts.append(f"KEGG:{len(kegg_genes)}({time.perf_counter() - kegg_started:.2f}s)")
 
                     # =============================
                     # EggNOG
                     # =============================
+                    eggnog_started = time.perf_counter()
                     eggnog_ids = get_eggnog_ids_from_uniprot_json(uni)
 
                     # Fallback: direct EggNOG lookup by UniProt if cross-references are missing
@@ -1618,12 +1679,13 @@ else:
                                 record["orthologous_groups"] = ";".join(sorted(set(ortho_list)))
 
                     if eggnog_count > 0:
-                        status_parts.append(f"EGNOG:{eggnog_count}")
+                        status_parts.append(f"EGNOG:{eggnog_count}({time.perf_counter() - eggnog_started:.2f}s)")
 
                     # =============================
                     # InterPro
                     # =============================
                     if interpro_ids:
+                        interpro_started = time.perf_counter()
                         interpro_count = 0
                         for ipr in interpro_ids[:3]:
                             r_ipr = safe_request(
@@ -1643,10 +1705,11 @@ else:
                                     interpro_count += 1
 
                         if interpro_count > 0:
-                            status_parts.append(f"IPR:{interpro_count}")
+                            status_parts.append(f"IPR:{interpro_count}({time.perf_counter() - interpro_started:.2f}s)")
 
             
             # STRING Network
+            string_started = time.perf_counter()
             string_identifier = resolve_string_identifier(gene_id, species=STRING_SPECIES, fallback_ids=[acc])
             svg_url = f"{STRING_API}/svg/network?identifiers={string_identifier}&species={STRING_SPECIES}"
             r_svg = safe_request(svg_url, timeout=30)
@@ -1668,7 +1731,7 @@ else:
                         })
                 if edges:
                     pd.DataFrame(edges).to_csv(f"{gene_dir}/string_edges_{gene_id}.csv", index=False)
-                    status_parts.append(f"STR:{len(edges)}")
+                    status_parts.append(f"STR:{len(edges)}({time.perf_counter() - string_started:.2f}s)")
             
             annotation_cache[gene_id] = record
             print(" | ".join(status_parts) if status_parts else "minimal")
@@ -1762,11 +1825,11 @@ else:
     save_cache("string_ids.json", string_id_cache)
     mark_step_complete("unified_annotation")
 
-    print(f"\n  ✓ Annotated {len(annotation_records)} genes")
-    print(f"  ✓ KEGG pathways: {len(kegg_records)}")
-    print(f"  ✓ EggNOG GO terms: {len(eggnog_go_records)}")
-    print(f"  ✓ EggNOG domains: {len(eggnog_domain_records)}")
-    print(f"  ✓ InterPro annotations: {len(interpro_records)}")
+    print(f"\n  [OK] Annotated {len(annotation_records)} genes")
+    print(f"  [OK] KEGG pathways: {len(kegg_records)}")
+    print(f"  [OK] EggNOG GO terms: {len(eggnog_go_records)}")
+    print(f"  [OK] EggNOG domains: {len(eggnog_domain_records)}")
+    print(f"  [OK] InterPro annotations: {len(interpro_records)}")
 
 # Load saved data files
 def safe_read_csv(path):
@@ -1862,7 +1925,7 @@ if is_step_complete_with_files("string_networks", [
     f"{UP_NETWORK}/upregulated_edges.csv",
     f"{DOWN_NETWORK}/downregulated_edges.csv"
 ]):
-    print("  ✓ Using cached networks")
+    print("  [OK] Using cached networks")
 else:
     print("  Building protein-protein interaction networks...")
     

@@ -5,7 +5,7 @@
     <div class="card-header">
         <div>
             <p class="eyebrow">Queue + archive</p>
-            <h2>All runs</h2>
+            <h2>Your runs</h2>
             <p class="lede">Track current jobs, stop a run if required, or reopen completed results.</p>
         </div>
     </div>
@@ -30,9 +30,9 @@
             <div class="status {{ r.status }} {% if r.status in ['running','queued'] %}status-pulse{% endif %}">{{ r.status }}</div>
             <div class="created-at" data-utc="{{ r.created_at.strftime('%Y-%m-%dT%H:%M:%SZ') }}">{{ r.created_at.strftime('%Y-%m-%d %H:%M') }} UTC</div>
             <div class="row-actions">
-                <a href="/runs/{{ r.id }}/logs" class="link" target="_blank" rel="noreferrer">Log</a>
+                <a href="#" class="link open-with-token" data-run-id="{{ r.id }}" data-target="logs" rel="noreferrer">Log</a>
                 {% if r.status == "completed" %}
-                <a href="/runs/{{ r.id }}/results" class="link">Results</a>
+                <a href="#" class="link open-with-token" data-run-id="{{ r.id }}" data-target="results">Results</a>
                 {% endif %}
                 {% if r.status in ["queued", "running"] %}
                 <button type="button" class="link danger stop-run" data-run-id="{{ r.id }}">Stop</button>
@@ -51,11 +51,12 @@
         <div>
             <p class="eyebrow">Search runs</p>
             <h2>Reopen specific run</h2>
-            <p class="lede">Enter the 8-character ID to jump directly to the results page.</p>
+            <p class="lede">Enter the 8-character ID and your access token to open results.</p>
         </div>
     </div>
     <form class="actions" id="resume-form">
         <input id="resume-run-id" type="text" name="run_id" placeholder="Run code (e.g. 3f4b0315)" required style="flex:1; min-width:240px; padding:12px; border:1px solid var(--border); border-radius:10px; background:#fff; color:var(--text);">
+        <input id="resume-access-token" type="text" name="access_token" placeholder="Access token" required style="flex:1; min-width:240px; padding:12px; border:1px solid var(--border); border-radius:10px; background:#fff; color:var(--text);">
         <button class="btn secondary" type="submit">Open results</button>
     </form>
 </section>
@@ -76,10 +77,13 @@
             const runId = btn.getAttribute('data-run-id');
             if (!runId) return;
             if (!confirm(`Stop run ${runId}?`)) return;
+            const token = prompt(`Enter access token for run ${runId}:`);
+            if (!token) return;
             btn.disabled = true;
             btn.textContent = 'Stopping...';
             try {
-                const res = await fetch(`/runs/${runId}/stop`, { method: 'POST' });
+                const tokenQuery = `?access_token=${encodeURIComponent(token.trim())}`;
+                const res = await fetch(`/runs/${runId}/stop${tokenQuery}`, { method: 'POST' });
                 if (!res.ok) throw new Error('Request failed');
                 location.reload();
             } catch (err) {
@@ -91,14 +95,29 @@
         });
     });
 
+    document.querySelectorAll('.open-with-token').forEach(link => {
+        link.addEventListener('click', evt => {
+            evt.preventDefault();
+            const runId = link.getAttribute('data-run-id');
+            const target = link.getAttribute('data-target') || 'results';
+            if (!runId) return;
+            const token = prompt(`Enter access token for run ${runId}:`);
+            if (!token) return;
+            const qs = `?access_token=${encodeURIComponent(token.trim())}`;
+            window.location.href = `/runs/${encodeURIComponent(runId)}/${target}${qs}`;
+        });
+    });
+
     const resumeForm = document.getElementById('resume-form');
     const resumeInput = document.getElementById('resume-run-id');
-    if (resumeForm && resumeInput) {
+    const resumeTokenInput = document.getElementById('resume-access-token');
+    if (resumeForm && resumeInput && resumeTokenInput) {
         resumeForm.addEventListener('submit', evt => {
             evt.preventDefault();
             const runId = resumeInput.value.trim();
-            if (!runId) return;
-            window.location.href = `/runs/${encodeURIComponent(runId)}/results`;
+            const token = resumeTokenInput.value.trim();
+            if (!runId || !token) return;
+            window.location.href = `/runs/${encodeURIComponent(runId)}/results?access_token=${encodeURIComponent(token)}`;
         });
     }
 </script>

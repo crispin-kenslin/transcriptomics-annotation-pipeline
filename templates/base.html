@@ -12,7 +12,7 @@
 </head>
 <body>
     <header class="topbar">
-        <a class="brand brand-link brand-custom" href="{{ request.url_for('home') }}" title="Home">
+        <a class="brand brand-link brand-custom" href="/" title="Home">
             <img src="/static/media/images/site-logo-placeholder.png" alt="Logo" class="brand-logo brand-logo--custom" loading="lazy" />
             <div class="brand-copy">
                 <strong>Transcriptomics Annotation Pipeline</strong>
@@ -20,11 +20,11 @@
             </div>
         </a>
         <nav class="nav-links">
-            <a href="{{ request.url_for('home') }}">Home</a>
-            <a href="{{ request.url_for('run_launcher') }}">Run</a>
-            <a href="{{ request.url_for('history_page') }}">History</a>
-            <a href="{{ request.url_for('species_page') }}">Species</a>
-            <a href="{{ request.url_for('help_page') }}">Help</a>
+            <a href="/">Home</a>
+            <a href="/run">Run</a>
+            <a href="/history">History</a>
+            <a href="/species">Species</a>
+            <a href="/help">Help</a>
         </nav>
         <div class="topbar-actions">
             <a class="caps-dock" href="https://caps.ncbs.res.in/" title="CAPS reference site" target="_blank" rel="noopener noreferrer">

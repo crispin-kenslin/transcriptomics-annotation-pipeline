@@ -8,8 +8,8 @@
         <h1>Plant Transcriptiomics Annotation Pipeline</h1>
         <p class="lede">Annotation of plant genes in a single run through an automated pipeline</p>
         <div class="actions" style="margin-top:18px;">
-            <a class="btn primary" href="{{ request.url_for('run_launcher') }}">Start a run</a>
-            <a class="btn secondary" href="{{ request.url_for('history_page') }}">Open history</a>
+            <a class="btn primary" href="/run">Start a run</a>
+            <a class="btn secondary" href="/history">Open history</a>
         </div>
     </div>
 </section>
@@ -69,7 +69,7 @@
             <p class="eyebrow">Latest runs</p>
             <h2>Quick glance</h2>
         </div>
-        <a class="link" href="{{ request.url_for('history_page') }}">Open full history →</a>
+        <a class="link" href="/history">Open full history →</a>
     </div>
     {% if runs %}
     <div class="table compact-table">
