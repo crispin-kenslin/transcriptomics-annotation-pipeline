@@ -1,221 +1,210 @@
 {% extends "base.html" %}
 {% block title %}Help{% endblock %}
+
 {% block content %}
+
 <section class="help-page">
-    <div class="card-header">
-        <div>
-            <p class="eyebrow">Support</p>
-            <h1>Help</h1>
-        </div>
-    </div>
 
-    <div class="help-layout">
-        <aside class="help-nav">
-            <h3 class="nav-title">Help navigation</h3>
-            <ul>
-                <li><a href="#input-format">Input format</a></li>
-                <li><a href="#thresholds">Thresholds</a></li>
-                <li><a href="#interpreting-results">Interpreting results</a></li>
-                <li><a href="#downloads">Downloads</a></li>
-                <li><a href="#troubleshooting">Troubleshooting</a></li>
-                <li><a href="#api-health">API health</a></li>
-                <li><a href="#psiblast">PSI-BLAST workflow</a></li>
-            </ul>
-        </aside>
+<div class="card-header">
+<div>
+<p class="eyebrow">Support</p>
+<h1>Help</h1>
+</div>
+</div>
 
-        <div class="help-body">
-            <div class="accordion">
-                <details id="input-format" open>
-                    <summary>Input format</summary>
-                    <div class="help-section">
-                        <p class="hint">Upload a CSV with at least three columns: gene ID, log2 fold change, and p-value. Map them in the run form before launching.</p>
-                        <div class="media-stack">
-                            <div class="media-box">
-                                <figure>
-                                    <img src="/static/images/input-format.png" alt="Example expression table" loading="lazy">
-                                    <figcaption>Drop your own screenshot into static/images and update this path.</figcaption>
-                                </figure>
-                            </div>
-                            <div class="media-box video">
-                                <div class="video-frame">
-                                    <iframe src="https://www.youtube.com/embed/VIDEO_ID" title="Input format walkthrough" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-                                </div>
-                                <p class="hint">Swap VIDEO_ID with the actual YouTube ID when ready.</p>
-                            </div>
-                        </div>
-                    </div>
-                </details>
 
-                <details id="thresholds">
-                    <summary>Thresholds</summary>
-                    <div class="help-section">
-                        <p class="hint">log2FC and p-value cutoffs filter points on the volcano plot. Distance percentile trims noisy points before calling significant genes.</p>
-                        <div class="media-stack">
-                            <div class="media-box">
-                                <figure>
-                                    <img src="/static/images/thresholds.png" alt="Threshold controls" loading="lazy">
-                                    <figcaption>Point this src attribute to any image inside static/images.</figcaption>
-                                </figure>
-                            </div>
-                            <div class="media-box video">
-                                <div class="video-frame">
-                                    <iframe src="https://www.youtube.com/embed/kna1kwogS8o" title="Proteins, Genomes and Bioinformatics - CAPS Journey so far | Bioinformatics" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-                                </div>
-                                <p class="hint">Paste a YouTube embed URL above when you have one.</p>
-                            </div>
-                        </div>
-                    </div>
-                </details>
+<div class="help-layout">
 
-                <details id="interpreting-results">
-                    <summary>Interpreting results</summary>
-                    <div class="help-section">
-                        <p class="hint">Click any point on the volcano plot to load annotations: GO terms, domains, KEGG, orthologous groups, fold predictions, TMHMM-style topology, and networks.</p>
-                        <div class="media-stack">
-                            <div class="media-box">
-                                <figure>
-                                    <img src="/static/images/interpreting-results.png" alt="Volcano plot annotations" loading="lazy">
-                                    <figcaption>Replace with screenshots of your own analysis.</figcaption>
-                                </figure>
-                            </div>
-                            <div class="media-box video">
-                                <div class="video-frame">
-                                    <iframe src="https://www.youtube.com/embed/VIDEO_ID" title="Results tour" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-                                </div>
-                                <p class="hint">Set the src to any YouTube embed link.</p>
-                            </div>
-                        </div>
-                    </div>
-                </details>
 
-                <details id="downloads">
-                    <summary>Downloads</summary>
-                    <div class="help-section">
-                        <p class="hint">Use the Downloads & tables button in the results page to grab CSVs, STRING SVGs, and per-gene FASTA/PDB assets.</p>
-                        <div class="media-stack">
-                            <div class="media-box">
-                                <figure>
-                                    <img src="/static/images/downloads.png" alt="Downloads panel" loading="lazy">
-                                    <figcaption>Keep assets in static/images and adjust this path.</figcaption>
-                                </figure>
-                            </div>
-                            <div class="media-box video">
-                                <div class="video-frame">
-                                    <iframe src="https://www.youtube.com/embed/VIDEO_ID" title="Downloads overview" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-                                </div>
-                                <p class="hint">Update VIDEO_ID to the relevant walkthrough.</p>
-                            </div>
-                        </div>
-                    </div>
-                </details>
+<!-- LEFT NAVIGATION -->
 
-                <details id="troubleshooting">
-                    <summary>Troubleshooting</summary>
-                    <div class="help-section">
-                        <p class="hint">If a run stalls, stop it from History and relaunch. Empty plots usually mean thresholds are too strict or columns were mis-mapped.</p>
-                        <div class="media-stack">
-                            <div class="media-box">
-                                <figure>
-                                    <img src="/static/images/troubleshooting.png" alt="Troubleshooting tips" loading="lazy">
-                                    <figcaption>Point to any PNG/JPG saved under static/images.</figcaption>
-                                </figure>
-                            </div>
-                            <div class="media-box video">
-                                <div class="video-frame">
-                                    <iframe src="https://www.youtube.com/embed/VIDEO_ID" title="Troubleshooting video" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-                                </div>
-                                <p class="hint">Paste a full https://www.youtube.com/embed/... URL.</p>
-                            </div>
-                        </div>
-                    </div>
-                </details>
+<aside class="help-nav">
 
-                <details id="api-health">
-                    <summary>API health</summary>
-                    <div class="help-section">
-                        <p class="hint">Backend status is still available at /health even though the nav link was removed.</p>
-                        <div class="media-stack">
-                            <div class="media-box">
-                                <figure>
-                                    <img src="/static/images/api-health.png" alt="API health endpoint" loading="lazy">
-                                    <figcaption>Swap this file path for any status screenshot.</figcaption>
-                                </figure>
-                            </div>
-                            <div class="media-box video">
-                                <div class="video-frame">
-                                    <iframe src="https://www.youtube.com/embed/VIDEO_ID" title="API health check" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-                                </div>
-                                <p class="hint">Only the portion after /embed/ needs to change.</p>
-                            </div>
-                        </div>
-                    </div>
-                </details>
+<h3 class="nav-title">Help navigation</h3>
 
-                <details id="psiblast">
-                    <summary>PSI-BLAST workflow</summary>
-                    <div class="help-section">
-                        <p class="hint">After clicking "Run PSI-BLAST" in Results, a new NCBI tab opens. Wait for the job page, then use "Formatting options" to see alignments. If the sequence box is hidden, click "Edit and resubmit"—the query sequence is prefilled.</p>
-                        <div class="media-stack">
-                            <div class="media-box">
-                                <figure>
-                                    <img src="/static/images/psiblast.png" alt="PSI-BLAST workflow" loading="lazy">
-                                    <figcaption>Store workflow captures inside static/images and update the src.</figcaption>
-                                </figure>
-                            </div>
-                            <div class="media-box video">
-                                <div class="video-frame">
-                                    <iframe src="https://www.youtube.com/embed/VIDEO_ID" title="PSI-BLAST workflow video" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-                                </div>
-                                <p class="hint">Replace VIDEO_ID with the PSI-BLAST tutorial link.</p>
-                            </div>
-                        </div>
-                    </div>
-                </details>
-            </div>
-        </div>
-    </div>
+<ul>
+<li><a href="#input-format">Input</a></li>
+<li><a href="#analysis">Analysis</a></li>
+</ul>
+
+</aside>
+
+
+
+<div class="help-body">
+
+<div class="accordion">
+
+
+<!-- INPUT SECTION -->
+
+<details id="input-format" open>
+
+<summary>Input</summary>
+
+<div class="help-section">
+
+<p class="hint">
+Upload a CSV file containing at least three columns:
+<strong>gene_id</strong>, <strong>log2FC</strong>, and <strong>p_value</strong>.
+Map these columns in the Run page before launching.
+</p>
+
+
+<div class="media-stack">
+
+<div class="media-box">
+
+<figure>
+
+<img src="/static/images/input-format.png"
+alt="Example expression table"
+loading="lazy">
+
+<figcaption>
+Example expression table format.
+</figcaption>
+
+</figure>
+
+</div>
+
+
+
+<div class="media-box video">
+
+<div class="video-frame">
+
+<iframe width="100%" height="400"
+src="https://www.youtube.com/embed/U_TCBkSLFGU"
+title="Input tutorial"
+frameborder="0"
+allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+allowfullscreen>
+</iframe>
+
+</div>
+
+</div>
+
+
+</div>
+
+</div>
+
+</details>
+
+
+
+<!-- ANALYSIS SECTION -->
+
+<details id="analysis">
+
+<summary>Analysis</summary>
+
+<div class="help-section">
+
+<p class="hint">
+This tutorial explains how to interpret TAP results including
+functional annotation, domains, pathways, and interaction networks.
+</p>
+
+
+<div class="media-box video">
+
+<div class="video-frame">
+
+<iframe width="100%" height="400"
+src="https://www.youtube.com/embed/e4G8CZT9KPw"
+title="Analysis tutorial"
+frameborder="0"
+allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+allowfullscreen>
+</iframe>
+
+</div>
+
+</div>
+
+</div>
+
+</details>
+
+
+</div>
+
+</div>
+
+</div>
+
 </section>
 
+
+
 <script>
-    const navLinks = Array.from(document.querySelectorAll('.help-nav a'));
-    const sections = navLinks
-        .map(link => document.querySelector(link.getAttribute('href')))
-        .filter(Boolean);
 
-    sections.forEach(section => { section.open = true; });
+const navLinks = Array.from(document.querySelectorAll('.help-nav a'));
 
-    const setActive = (id) => {
-        navLinks.forEach(link => {
-            link.classList.toggle('is-active', link.getAttribute('href') === `#${id}`);
-        });
-    };
+const sections = navLinks
+.map(link => document.querySelector(link.getAttribute('href')))
+.filter(Boolean);
 
-    navLinks.forEach(link => {
-        link.addEventListener('click', evt => {
-            evt.preventDefault();
-            const targetId = link.getAttribute('href');
-            const panel = document.querySelector(targetId);
-            if (!panel) return;
-            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            setActive(panel.id);
-        });
-    });
 
-    if (sections.length) {
-        const observer = new IntersectionObserver(entries => {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    setActive(entry.target.id);
-                }
-            });
-        }, {
-            root: null,
-            rootMargin: '-40% 0px -50% 0px',
-            threshold: 0.1
-        });
+sections.forEach(section => { section.open = true; });
 
-        sections.forEach(section => observer.observe(section));
-        setActive(sections[0].id);
-    }
+
+const setActive = (id) => {
+navLinks.forEach(link => {
+link.classList.toggle('is-active', link.getAttribute('href') === `#${id}`);
+});
+};
+
+
+navLinks.forEach(link => {
+link.addEventListener('click', evt => {
+
+evt.preventDefault();
+
+const targetId = link.getAttribute('href');
+
+const panel = document.querySelector(targetId);
+
+if (!panel) return;
+
+panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+setActive(panel.id);
+
+});
+});
+
+
+if (sections.length) {
+
+const observer = new IntersectionObserver(entries => {
+
+entries.forEach(entry => {
+
+if (entry.isIntersecting) {
+setActive(entry.target.id);
+}
+
+});
+
+}, {
+root: null,
+rootMargin: '-40% 0px -50% 0px',
+threshold: 0.1
+});
+
+
+sections.forEach(section => observer.observe(section));
+
+setActive(sections[0].id);
+
+}
+
 </script>
+
+
 {% endblock %}
