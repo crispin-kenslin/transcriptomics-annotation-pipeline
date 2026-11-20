@@ -1,6 +1,6 @@
 # Transcriptomics Annotation Pipeline
 
-This repository powers a production-grade transcriptomics web portal designed for browser-first use. Researchers upload GEO-style differential expression files, launch automated annotation, and explore richly visualized gene dossiers without installing local software. The platform orchestrates downstream services (UniProt, Ensembl, STRING, KEGG, EggNOG, InterPro, Phobius, GOR4, AlphaSync) and delivers curated dashboards, tables, and export-ready bundles.
+This repository powers a production-grade transcriptomics web portal designed for browser-first use. Researchers upload GEO-style differential expression files, launch automated annotation, and explore richly visualized gene files without installing local software. The platform orchestrates downstream services (UniProt, Ensembl, STRING, KEGG, EggNOG, InterPro, Phobius, GOR4, AlphaSync) and delivers curated dashboards, tables, and export-ready bundles.
 
 Available at https://caps.ncbs.res.in/TAP
 
@@ -12,7 +12,7 @@ Available at https://caps.ncbs.res.in/TAP
 
 ## Core Capabilities
 - **End-to-end processing** from CSV ingestion to final visualization.
-- **Gene-level dossiers** with FASTA, structure, topology, pathways, GO terms, and networks.
+- **Gene-level files** with FASTA, structure, topology, pathways, GO terms, and networks.
 - **Interactive exploration** of STRING neighborhoods, KEGG pathways, and domain families.
 - **Resilient annotation** via retries, polling, and heuristic fallbacks.
 - **Versioned runs** with unique identifiers and cached results for rapid reloads.
@@ -27,26 +27,26 @@ Available at https://caps.ncbs.res.in/TAP
 
 ## Input Specifications
 **Required columns**
-- `gene_id`
-- `log2FC`
-- `p_value`
+- `Gene ID` List of gene ID from the RNA-Seq experiment.
+- `Log 2 Fold Change` Precomputed Log2FC values for the genes according to experiment setup (eg. control vs treatment)
+- `p value` Precomputed probability values from the raw counts.
 
 **Recommendations**
 - Use gene-level summary statistics (not transcript-level).
 - Provide corrected p-values if FDR filtering will be applied.
 - Additional columns are preserved and shown in results tables.
 
-## Output Artifacts
+## Output files
 **Global exports**
-- Consolidated annotations CSV
+- Consolidated CSV of results and annotations
 - Upregulated and downregulated gene lists
-- GO, KEGG, EggNOG, and InterPro summaries
+- GO, KEGG, EggNOG, and InterPro annotations
 
-**Per-gene dossier**
-- Protein FASTA (when available)
+**Per-gene files**
+- Protein FASTA
 - Secondary structure: GOR4 visuals + residue table
 - AlphaSync results and heuristic backups
-- Phobius topology PNG and text
+- TMHMM topology PNG and text
 - STRING interaction subnetwork
 - GO, KEGG, InterPro, Pfam/CATH, EggNOG annotations
 
