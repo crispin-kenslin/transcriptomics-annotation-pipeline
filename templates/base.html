@@ -4,37 +4,55 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{% block title %}Transcriptomics Pipeline{% endblock %}</title>
-    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" href="{{ app_url(request, '/favicon.ico') }}" sizes="any">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="{{ app_url(request, '/static/style.css') }}" />
+    <meta name="tap-base" content="{{ app_url(request, '') }}">
+    <script>window.TAP_BASE = document.querySelector('meta[name="tap-base"]')?.content || '';</script>
 </head>
 <body>
     <header class="topbar">
-        <a class="brand brand-link brand-custom" href="/" title="Home">
-            <img src="/static/media/images/site-logo-placeholder.png" alt="Logo" class="brand-logo brand-logo--custom" loading="lazy" />
+        <a class="brand brand-link brand-custom" href="{{ app_url(request, '/') }}" title="Home">
+            <img src="{{ app_url(request, '/static/media/images/site-logo.png') }}" alt="Logo" class="brand-logo brand-logo--custom" loading="lazy" width="60" height="60" />
             <div class="brand-copy">
                 <strong>Transcriptomics Annotation Pipeline</strong>
                 <span>Annotate Genes in a single run</span>
             </div>
         </a>
         <nav class="nav-links">
-            <a href="/">Home</a>
-            <a href="/run">Run</a>
-            <a href="/history">History</a>
-            <a href="/species">Species</a>
-            <a href="/help">Help</a>
+            <a href="{{ app_url(request, '/') }}">Home</a>
+            <a href="{{ app_url(request, '/run') }}">Run</a>
+            <a href="{{ app_url(request, '/history') }}">History</a>
+            <a href="{{ app_url(request, '/species') }}">Species</a>
+            <a href="{{ app_url(request, '/help') }}">Help</a>
         </nav>
         <div class="topbar-actions">
             <a class="caps-dock" href="https://caps.ncbs.res.in/" title="CAPS reference site" target="_blank" rel="noopener noreferrer">
-                <img src="/static/media/images/caps-logo.webp" alt="CAPS logo" class="caps-mark" loading="lazy" />
+                <img src="{{ app_url(request, '/static/media/images/caps-logo.webp') }}" alt="CAPS logo" class="caps-mark" loading="lazy" />
             </a>
         </div>
     </header>
     <main class="page">
         {% block content %}{% endblock %}
     </main>
+    <footer class="site-footer">
+        <div class="site-footer__inner">
+            <div class="site-footer__brand">
+                <strong>Transcriptomics Annotation Pipeline</strong>
+                <span>Automated annotation for plant differential-expression studies.</span>
+            </div>
+            <nav class="site-footer__links">
+                <a href="{{ app_url(request, '/') }}">Home</a>
+                <a href="{{ app_url(request, '/run') }}">Run</a>
+                <a href="{{ app_url(request, '/history') }}">History</a>
+                <a href="{{ app_url(request, '/species') }}">Species</a>
+                <a href="{{ app_url(request, '/help') }}">Help</a>
+            </nav>
+        </div>
+        <p class="site-footer__meta">Uploaded files and results are automatically removed after a limited retention window. Each run is protected by a private access token — keep your run link and token confidential.</p>
+    </footer>
     <script>
         (function() {
             const revealTargets = document.querySelectorAll('.card, .hero, .reveal-up');

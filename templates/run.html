@@ -7,7 +7,6 @@
         <div>
             <p class="eyebrow">Run {{ run.id }}</p>
             <h1>Status: <span id="status-text" class="status {{ run.status }} {% if run.status in ['running','queued'] %}status-pulse{% endif %}">{{ run.status }}</span></h1>
-            <p class="lede">Live logs refresh every two seconds. Species chips mirror the taxonomy banners you’d see on UniProt or InterPro.</p>
         </div>
         <div style="display:flex; gap:8px; flex-wrap:wrap;">
             <span class="species-chip">{{ species.species_label or 'Auto detection' }}</span>
@@ -49,46 +48,103 @@
         </div>
     </div>
 
-    <div class="log-container" id="log-box">
-        <pre id="log-text">Loading log...</pre>
+    <div class="progress-container" id="progress-box" style="margin-top: 20px;">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+            <div class="stat-box">
+                <span class="hint">Total Genes Filtered</span>
+                <h3 id="stat-total">0</h3>
+            </div>
+            <div class="stat-box">
+                <span class="hint">Outliers (Upregulated / Downregulated)</span>
+                <h3><span id="stat-up">0</span> / <span id="stat-down">0</span></h3>
+            </div>
+        </div>
+
+        <div class="progress-bar-wrapper" style="background: var(--bg-alt); border-radius: 8px; padding: 15px; border: 1px solid var(--border);">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                <span class="strong" id="current-gene-label">Preparing pipeline...</span>
+                <span class="hint" id="progress-percent">0%</span>
+            </div>
+            <div style="background: #e0e0e0; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 10px;">
+                <div id="progress-fill" style="background: var(--accent); height: 100%; width: 0%; transition: width 0.3s ease;"></div>
+            </div>
+            <div id="stage-badges" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
+        </div>
     </div>
-    <div class="actions">
+
+    <div class="actions" style="margin-top: 20px;">
         {% if run.status in ["queued", "running"] %}
         <button id="stop-btn" class="btn secondary" type="button">Stop run</button>
         {% endif %}
-        <a id="results-link" class="btn secondary" href="/runs/{{ run.id }}/results{{ run_access_qs }}" style="display: none;">View results</a>
-        <a class="link" href="/runs/{{ run.id }}/logs{{ run_access_qs }}" target="_blank">Open full log</a>
-    </div>
-    <div class="callout" style="margin-top:18px;">
-        The FastAPI service captures raw logs in <strong>runs/{{ run.id }}/pipeline.log</strong>. Share that file when asking for help—the structure matches UniProt/InterPro submission diagnostics.
     </div>
 </section>
+
+<style>
+.stat-box { background: var(--bg-alt); padding: 12px 20px; border-radius: 6px; border: 1px solid var(--border); text-align: center; flex: 1; margin: 0 5px; }
+.stat-box h3 { margin: 5px 0 0 0; color: var(--text); }
+.badge { padding: 4px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; background: #eee; color: #666; border: 1px solid #ddd; transition: all 0.2s; }
+.badge.active { background: var(--accent-soft, #fff3cd); color: var(--accent-2); border-color: var(--accent); }
+.badge.success { background: #e6f9ee; color: #157a4a; border-color: #9ee6c1; }
+</style>
 
 <script>
     const runId = "{{ run.id }}";
     const runAccessToken = "{{ run_access_token or '' }}";
     const runAccessQs = runAccessToken ? `?access_token=${encodeURIComponent(runAccessToken)}` : '';
-    const logBox = document.getElementById("log-text");
     const statusText = document.getElementById("status-text");
-    const resultsLink = document.getElementById("results-link");
     const stopBtn = document.getElementById("stop-btn");
+
+    const PIPELINE_STAGES = [
+        "Loading data", "UniProt search", "AlphaFold structures",
+        "Secondary structure (GOR4)", "TMHMM topology", "STRING networks",
+        "Gene networks", "Volcano plot"
+    ];
+
+    function updateStageBadges(stageIndex) {
+        const container = document.getElementById('stage-badges');
+        let html = '';
+        PIPELINE_STAGES.forEach((label, i) => {
+            const n = i + 1;
+            let cls = 'badge';
+            if (n < stageIndex) cls = 'badge success';
+            else if (n === stageIndex) cls = 'badge active';
+            html += `<span class="${cls}">${label}</span>`;
+        });
+        container.innerHTML = html;
+    }
 
     async function poll() {
         try {
-            const res = await fetch(`/runs/${runId}/status${runAccessQs}`);
+            const res = await fetch(`${window.TAP_BASE}/runs/${runId}/status${runAccessQs}`);
             if (!res.ok) return;
             const data = await res.json();
             statusText.textContent = data.status;
             statusText.className = `status ${data.status}`;
-            if (Array.isArray(data.logs)) {
-                logBox.textContent = data.logs.join("\n") || "Waiting for output...";
+
+            document.getElementById('stat-total').textContent = data.total_genes || 0;
+            document.getElementById('stat-up').textContent = data.sig_up || 0;
+            document.getElementById('stat-down').textContent = data.sig_down || 0;
+
+            if (data.current_stage) {
+                document.getElementById('current-gene-label').textContent = `${data.current_stage}`;
             }
+            updateStageBadges(data.stage_index || 0);
+
+            const percent = Math.round((data.progress_ratio || 0) * 100);
+            document.getElementById('progress-percent').textContent = `${percent}%`;
+            document.getElementById('progress-fill').style.width = `${percent}%`;
+
             if (data.status === "completed") {
-                window.location.assign(`/runs/${runId}/results${runAccessQs}`);
+                document.getElementById('progress-fill').style.width = `100%`;
+                document.getElementById('progress-percent').textContent = `100%`;
+                document.getElementById('current-gene-label').textContent = `Analysis complete`;
+                updateStageBadges(PIPELINE_STAGES.length + 1);
+                window.location.replace(`${window.TAP_BASE}/runs/${runId}/results${runAccessQs}`);
                 return;
             }
             if (data.status === "failed") {
-                resultsLink.style.display = "none";
+                document.getElementById('current-gene-label').textContent = `Analysis failed`;
+                document.getElementById('progress-fill').style.background = `var(--danger)`;
                 return;
             }
         } catch (err) {
@@ -103,7 +159,7 @@
             stopBtn.disabled = true;
             stopBtn.textContent = 'Stopping...';
             try {
-                const res = await fetch(`/runs/${runId}/stop${runAccessQs}`, { method: 'POST' });
+                const res = await fetch(`${window.TAP_BASE}/runs/${runId}/stop${runAccessQs}`, { method: 'POST' });
                 if (!res.ok) throw new Error('Stop failed');
                 statusText.textContent = 'stopped';
                 statusText.className = 'status stopped';

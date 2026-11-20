@@ -1,75 +1,28 @@
 {% extends "base.html" %}
-{% block title %}Plant Transcription Annotation Pipeline{% endblock %}
+{% block title %}TAP {% endblock %}
 {% block content %}
-<!-- Hero background asset target: 1920px × 760px -->
-<section class="hero hero--fullbleed hero--center reveal-up" style="--hero-aspect: 1920 / 760; --hero-bg-image: url('/static/media/images/home-plants.png'); --hero-bg-size: cover; --hero-bg-position: center; --hero-bg-repeat: no-repeat; --hero-bg-opacity: 0.75; --hero-overlay-opacity: 0; --hero-bg-base-opacity: 0;">
-    <div class="hero-copy">
+<section class="hero hero--fullbleed hero--center reveal-up"
+    style="--hero-aspect: 1920 / 900; --hero-bg-size: cover; --hero-bg-position: center; --hero-bg-repeat: no-repeat; --hero-bg-opacity: 0.75; --hero-overlay-opacity: 0; --hero-bg-base-opacity: 0;">
+    <div class="hero--fullbleed">
         <p class="eyebrow">Transcriptomics Annotation Pipeline</p>
-        <h1>Plant Transcriptiomics Annotation Pipeline</h1>
-        <p class="lede">Annotation of plant genes in a single run through an automated pipeline</p>
+        <img src="{{ app_url(request, '/static/media/images/tap-title.png') }}" alt="Transcriptomics Annotation Pipeline Animation"
+            style="max-width: 100%; height: auto; margin-bottom: 12px; background: transparent;">
+        <p class="lede">Upload a differential-expression table and get annotated, network-ready results in a single
+            automated run.</p>
         <div class="actions" style="margin-top:18px;">
-            <a class="btn primary" href="/run">Start a run</a>
-            <a class="btn secondary" href="/history">Open history</a>
+            <a class="btn primary" href="{{ app_url(request, '/run') }}">Start a run</a>
+            <a class="btn secondary" href="{{ app_url(request, '/history') }}">Open history</a>
         </div>
     </div>
 </section>
 
-<!-- Section background asset target: 1600px × 520px (swap --card-bg-image as needed) -->
-<section class="card reveal-up" id="overview" style="--card-bg-image: url('/static/media/images/home-data.svg'); --card-bg-opacity: 0.22; --card-bg-overlay: 0.9;">
-    <div class="card-header">
-        <div>
-            <p class="eyebrow">Pipeline content (to be added)</p>
-            <h2>About the pipeline</h2>
-        </div>
-    </div>
-    <div class="stat-board">
-        <article class="stat-chip">
-            <h3>Multi-species</h3>
-            <span>{{ species_options|length }} curated species with auto detection and overrides.</span>
-        </article>
-        <article class="stat-chip">
-            <h3>Automation</h3>
-            <span>UniProt · STRING · KEGG · InterPro · EggNOG · AlphaFold are available in one submission.</span>
-        </article>
-        <article class="stat-chip">
-            <h3>Dashboards</h3>
-            <span>Webpage content (to be added)</span>
-        </article>
-    </div>
-</section>
-
-<!-- Section background asset target: 1600px × 520px -->
-<section class="card reveal-up" id="workflow" style="--card-bg-image: url('/static/media/images/home-pipeline.svg'); --card-bg-opacity: 0.18; --card-bg-overlay: 0.85;">
-    <div class="card-header">
-        <div>
-            <p class="eyebrow">Editorial sections</p>
-            <h2>Workflow in three disciplined beats</h2>
-        </div>
-    </div>
-    <div class="insight-grid">
-        <article class="insight-card">
-            <h3>Load + validate</h3>
-            <p>Upload DE tables, confirm contrasts, and keep metadata tidy before launching.</p>
-        </article>
-        <article class="insight-card">
-            <h3>Annotate</h3>
-            <p>TAP enriches IDs, pathways, domains, and GO sets with regulated naming conventions.</p>
-        </article>
-        <article class="insight-card">
-            <h3>Review</h3>
-            <p>Tab through results, export CSVs, and stage executive screenshots without additional styling.</p>
-        </article>
-    </div>
-</section>
-
-<!-- Section background asset target: 1600px × 520px -->
-<section class="card reveal-up" id="latest" style="--card-bg-image: url('/static/media/images/home-servers.svg'); --card-bg-opacity: 0.2; --card-bg-overlay: 0.88;">
+<section class="card reveal-up" id="latest">
     <div class="card-header">
         <div>
             <p class="eyebrow">Latest runs</p>
             <h2>Quick glance</h2>
         </div>
-        <a class="link" href="/history">Open full history →</a>
+        <a class="link" href="{{ app_url(request, '/history') }}">Open full history →</a>
     </div>
     {% if runs %}
     <div class="table compact-table">
@@ -83,8 +36,10 @@
         <div class="table-row">
             <div>{{ r.id }}</div>
             <div>{{ r.params.species_label or 'Auto' }}</div>
-            <div class="status {{ r.status }} {% if r.status in ['running','queued'] %}status-pulse{% endif %}">{{ r.status }}</div>
-            <div class="created-at" data-utc="{{ r.created_at.strftime('%Y-%m-%dT%H:%M:%SZ') }}">{{ r.created_at.strftime('%Y-%m-%d %H:%M') }} UTC</div>
+            <div class="status {{ r.status }} {% if r.status in ['running','queued'] %}status-pulse{% endif %}">{{
+                r.status }}</div>
+            <div class="created-at" data-utc="{{ r.created_at.strftime('%Y-%m-%dT%H:%M:%SZ') }}">{{
+                r.created_at.strftime('%Y-%m-%d %H:%M') }} UTC</div>
         </div>
         {% endfor %}
     </div>

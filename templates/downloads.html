@@ -6,32 +6,31 @@
         <div>
             <p class="eyebrow">Run {{ run.id }}</p>
             <h1>Downloads & tables</h1>
-            <p class="lede">Artifacts are grouped the way UniProt/InterPro organize exports—annotations, networks, and bundles stay distinct.</p>
+
         </div>
     </div>
     <div class="actions">
-        <a class="btn" href="/runs/{{ run.id }}/download-zip{{ run_access_qs }}">Download all (zip)</a>
+        <a class="btn" href="{{ app_url(request, '/runs/' ~ run.id ~ '/download-zip') }}{{ run_access_qs }}">Download all (zip)</a>
     </div>
     {% if downloads or networks %}
     <div class="downloads-grid" style="margin-top:18px;">
         {% for f in downloads %}
         <div class="download-card">
             <h3>{{ f.label }}</h3>
-            <span>CSV asset</span>
-            <a class="btn secondary" href="{{ f.path }}{{ run_access_qs }}" download>Download</a>
+            <a class="btn secondary" href="{{ app_url(request, f.path) }}{{ run_access_qs }}" download>Download</a>
         </div>
         {% endfor %}
         {% if networks %}
-            {% for net in networks %}
-            <div class="download-card">
-                <h3>{{ net.label }}</h3>
-                <span>STRING SVG</span>
-                <div class="actions">
-                    <a class="btn secondary" href="{{ net.view_url }}{{ run_access_qs }}" target="_blank">View</a>
-                    <a class="btn secondary" href="{{ net.download_url }}{{ run_access_qs }}" download>Download</a>
-                </div>
+        {% for net in networks %}
+        <div class="download-card">
+            <h3>{{ net.label }}</h3>
+            <span>STRING SVG</span>
+            <div class="actions">
+                <a class="btn secondary" href="{{ app_url(request, net.view_url) }}{{ run_access_qs }}" target="_blank">View</a>
+                <a class="btn secondary" href="{{ app_url(request, net.download_url) }}{{ run_access_qs }}" download>Download</a>
             </div>
-            {% endfor %}
+        </div>
+        {% endfor %}
         {% endif %}
     </div>
     {% else %}
@@ -50,7 +49,14 @@
         <h3>Top GO terms (EggNOG)</h3>
         {% if go_summary %}
         <table class="data-table">
-            <thead><tr><th>GO ID</th><th>Name</th><th>Category</th><th>Occurance</th></tr></thead>
+            <thead>
+                <tr>
+                    <th>GO ID</th>
+                    <th>Name</th>
+                    <th>Category</th>
+                    <th>Occurance</th>
+                </tr>
+            </thead>
             <tbody>
                 {% for row in go_summary %}
                 <tr>
@@ -71,7 +77,13 @@
         <h3>Top domains (InterPro)</h3>
         {% if interpro_summary %}
         <table class="data-table">
-            <thead><tr><th>Domain</th><th>Type</th><th>Occurance</th></tr></thead>
+            <thead>
+                <tr>
+                    <th>Domain</th>
+                    <th>Type</th>
+                    <th>Occurance</th>
+                </tr>
+            </thead>
             <tbody>
                 {% for row in interpro_summary %}
                 <tr>
@@ -91,7 +103,13 @@
         <h3>Top domains (EggNOG)</h3>
         {% if eggnog_dom_summary %}
         <table class="data-table">
-            <thead><tr><th>Domain</th><th>Type</th><th>Occurance</th></tr></thead>
+            <thead>
+                <tr>
+                    <th>Domain</th>
+                    <th>Type</th>
+                    <th>Occurance</th>
+                </tr>
+            </thead>
             <tbody>
                 {% for row in eggnog_dom_summary %}
                 <tr>

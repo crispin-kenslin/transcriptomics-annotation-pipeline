@@ -7,7 +7,6 @@
         <div>
             <p class="eyebrow">Run {{ run_id }}</p>
             <h1>Results overview</h1>
-            <p class="lede">Outcomes follow the polish of UniProt &amp; InterPro dashboards: species chips, curated stats, and download paths stay in view.</p>
         </div>
         <div class="pill subtle">Status: {{ run.status }}</div>
     </div>
@@ -34,20 +33,76 @@
         </div>
     </div>
     <div class="stat-board">
-        <div class="stat-chip"><p class="hint">Total genes</p><h3>{{ summary.total_genes | default('0') }}</h3><span>Cleaned rows: {{ species.cleaned_rows or '—' }}</span></div>
-        <div class="stat-chip"><p class="hint">Upregulated</p><h3 style="color:#42a437;">{{ summary.upregulated_count | default('0') }}</h3><span>log2FC &gt; {{ run.params.log2fc_threshold }}</span></div>
-        <div class="stat-chip"><p class="hint">Downregulated</p><h3 style="color:#dc6755;">{{ summary.downregulated_count | default('0') }}</h3><span>log2FC &lt; -{{ run.params.log2fc_threshold }}</span></div>
-        <div class="stat-chip"><p class="hint">log2FC threshold</p><h3>{{ run.params.log2fc_threshold }}</h3><span>Adjust in run form</span></div>
-        <div class="stat-chip"><p class="hint">p-value threshold</p><h3>{{ run.params.pvalue_threshold }}</h3><span>Dash-line on volcano plot</span></div>
-        <div class="stat-chip"><p class="hint">Distance percentile</p><h3>{{ run.params.distance_percentile }}</h3><span>STRING edge pruning</span></div>
-        <div class="stat-chip"><p class="hint">Runtime</p><h3>{{ run_duration or '—' }}</h3><span>Compute window</span></div>
-        <div class="stat-chip"><p class="hint">FDR</p><h3>{{ 'On' if run.params.use_fdr else 'Off' }}</h3><span>Benjamini–Hochberg</span></div>
+        <div class="stat-chip">
+            <p class="hint">Total genes</p>
+            <h3>{{ summary.total_genes | default('0') }}</h3><span>Cleaned rows: {{ species.cleaned_rows or '—'
+                }}</span>
+        </div>
+        <div class="stat-chip">
+            <p class="hint">Upregulated</p>
+            <h3 style="color:#42a437;">{{ summary.upregulated_count | default('0') }}</h3><span>log2FC &gt; {{
+                run.params.log2fc_threshold }}</span>
+        </div>
+        <div class="stat-chip">
+            <p class="hint">Downregulated</p>
+            <h3 style="color:#dc6755;">{{ summary.downregulated_count | default('0') }}</h3><span>log2FC &lt; -{{
+                run.params.log2fc_threshold }}</span>
+        </div>
+        <div class="stat-chip">
+            <p class="hint">log2FC threshold</p>
+            <h3>{{ run.params.log2fc_threshold }}</h3><span>Adjust in run form</span>
+        </div>
+        <div class="stat-chip">
+            <p class="hint">p-value threshold</p>
+            <h3>{{ run.params.pvalue_threshold }}</h3><span>Dash-line on volcano plot</span>
+        </div>
+        <div class="stat-chip">
+            <p class="hint">Distance percentile</p>
+            <h3>{{ run.params.distance_percentile }}</h3>
+        </div>
+        <div class="stat-chip">
+            <p class="hint">Runtime</p>
+            <h3>{{ run_duration or '—' }}</h3><span>Compute window</span>
+        </div>
+        <div class="stat-chip">
+            <p class="hint">FDR</p>
+            <h3>{{ 'On' if run.params.use_fdr else 'Off' }}</h3><span>Benjamini–Hochberg</span>
+        </div>
     </div>
 </section>
 
 <a class="floating-volcano-button" href="#volcano-plot" aria-label="Scroll to volcano plot" title="Volcano plot">
-<img src="/static/media/images/volcano-scroll.png" alt="Scroll back to Volcano plot">
+    <img src="{{ app_url(request, '/static/media/images/volcano-scroll.png') }}" alt="Scroll back to Volcano plot">
 </a>
+
+<button id="chat-toggle-btn" class="chat-toggle-btn" type="button" aria-expanded="false" aria-controls="chat-panel">
+    <span>💬</span><span>Ask about this dataset</span>
+</button>
+<div id="chat-backdrop" class="chat-panel__backdrop"></div>
+<aside id="chat-panel" class="chat-panel" aria-hidden="true">
+    <div class="chat-panel__header">
+        <div>
+            <p class="eyebrow">Dataset assistant</p>
+            <h3>Ask about your genes</h3>
+        </div>
+        <button id="chat-close-btn" class="chat-panel__close" type="button" aria-label="Close chat">&times;</button>
+    </div>
+    <div id="chat-messages" class="chat-panel__messages">
+        <div class="chat-msg chat-msg--assistant">
+            <p>Hi! I can answer questions about this run's genes, expression values, functions, GO terms, KEGG pathways
+                and domains. Try asking things like "what does the top upregulated gene do" or "summarize the
+                downregulated genes".</p>
+        </div>
+    </div>
+    <p id="chat-typing" class="chat-panel__typing" hidden>Assistant is typing…</p>
+    <form id="chat-form" class="chat-panel__form">
+        <textarea id="chat-input" rows="2" maxlength="1500"
+            placeholder="Ask about a gene, pathway, or the dataset..."></textarea>
+        <button type="submit" class="btn">Send</button>
+    </form>
+    <p class="hint chat-panel__hint">Answers are generated locally from this run's annotation files. Verify anything
+        critical against the source databases.</p>
+</aside>
 
 <section class="card reveal-up" id="gene-detail">
     <div class="card-header">
@@ -58,7 +113,8 @@
         </div>
     </div>
     <div class="search-bar">
-        <label for="gene-search" class="hint">Search genes by any annotation (ID, protein, function, domains, GO, KEGG, InterPro, EggNOG)</label>
+        <label for="gene-search" class="hint">Search genes by any annotation (ID, protein, function, domains, GO, KEGG,
+            InterPro, EggNOG)</label>
         <input id="gene-search" type="text" placeholder="Start typing to filter (live)">
     </div>
     <div id="gene-search-results" class="search-results"></div>
@@ -69,11 +125,14 @@
         <p class="hint">STRING network of the entire regulated genes.</p>
         <div class="string-pill-list">
             {% for net in networks %}
-            <div class="string-pill {% if 'down' in (net.label | lower) %}string-pill--down{% else %}string-pill--up{% endif %}">
+            <div
+                class="string-pill {% if 'down' in (net.label | lower) %}string-pill--down{% else %}string-pill--up{% endif %}">
                 <span class="string-pill__label">{{ net.label }}</span>
                 <div class="string-pill__actions">
-                    <a class="btn secondary" href="{{ net.view_url }}{{ run_access_qs }}" target="_blank" rel="noreferrer">View</a>
-                    <a class="btn" href="{{ net.download_url }}{{ run_access_qs }}" target="_blank" rel="noreferrer">Download</a>
+                    <a class="btn secondary" href="{{ app_url(request, net.view_url) }}{{ run_access_qs }}" target="_blank"
+                        rel="noreferrer">View</a>
+                    <a class="btn" href="{{ app_url(request, net.download_url) }}{{ run_access_qs }}" target="_blank"
+                        rel="noreferrer">Download</a>
                 </div>
             </div>
             {% endfor %}
@@ -104,11 +163,12 @@
         </div>
     </div>
     <div class="actions">
-        <a class="btn secondary" href="/runs/{{ run_id }}/downloads{{ run_access_qs }}" target="_blank">Open downloads & tables</a>
-        <a class="btn" href="/runs/{{ run_id }}/download-zip{{ run_access_qs }}">Download all output files (zip)</a>
-        <a class="btn secondary" href="/runs/{{ run_id }}/files/access_token.txt{{ run_access_qs }}" download>Download access token (.txt)</a>
+        <a class="btn secondary" href="{{ app_url(request, '/runs/' ~ run_id ~ '/downloads') }}{{ run_access_qs }}" target="_blank">Open downloads &
+            tables</a>
+        <a class="btn" href="{{ app_url(request, '/runs/' ~ run_id ~ '/download-zip') }}{{ run_access_qs }}">Download all output files (zip)</a>
+        <a class="btn secondary" href="{{ app_url(request, '/runs/' ~ run_id ~ '/files/access_token.txt') }}{{ run_access_qs }}" download>Download
+            access token (.txt)</a>
     </div>
-    <div class="callout" style="margin-top:16px;">Downloads reflect the same taxonomy-first order you see on UniProt or InterPro: annotations, GO splits, domains, STRING assets, and per-gene folders stay separated for clean archival.</div>
 </section>
 
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
@@ -120,15 +180,16 @@
     const runAccessQs = runAccessToken ? `?access_token=${encodeURIComponent(runAccessToken)}` : '';
     function addToken(url) {
         if (!url) return url;
-        if (!url.startsWith('/runs/')) return url;
-        if (!runAccessQs) return url;
-        return url.includes('?') ? `${url}&access_token=${encodeURIComponent(runAccessToken)}` : `${url}${runAccessQs}`;
+        const resolvedUrl = url.startsWith('/') ? `${window.TAP_BASE}${url}` : url;
+        if (!resolvedUrl.startsWith(`${window.TAP_BASE}/runs/`)) return resolvedUrl;
+        if (!runAccessQs) return resolvedUrl;
+        return resolvedUrl.includes('?') ? `${resolvedUrl}&access_token=${encodeURIComponent(runAccessToken)}` : `${resolvedUrl}${runAccessQs}`;
     }
     const volcanoHint = document.getElementById('volcano-hint');
     const geneTitle = document.getElementById('gene-title');
     const genePanel = document.getElementById('gene-panel');
-    const log2fcThresh = {{ run.params.log2fc_threshold | default(1.0) | safe }};
-    const pvalThresh = {{ run.params.pvalue_threshold | default(0.05) | safe }};
+    const log2fcThresh = {{ run.params.log2fc_threshold | default (1.0) | safe }};
+    const pvalThresh = {{ run.params.pvalue_threshold | default (0.05) | safe }};
     const searchInput = document.getElementById('gene-search');
     const searchResults = document.getElementById('gene-search-results');
     let volcanoPoints = [];
@@ -144,6 +205,124 @@
     function formatSci(val) {
         if (val === null || val === undefined || Number.isNaN(val)) return 'N/A';
         return Number(val).toExponential(2);
+    }
+
+    function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, character => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        })[character]);
+    }
+
+    function renderDatabaseLinks(value, database) {
+        const patterns = {
+            uniprot: /\b(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})\b/g,
+            interpro: /\bIPR\d{6}\b/gi,
+            pfam: /\bPF\d{5}\b/gi,
+            go: /\bGO:\d{7}\b/gi,
+            kegg: /\b(?:map|ko|[a-z]{3})\d{5}\b|\b[a-z]{3}:\d+\b/gi,
+            eggnog: /\b(?:ENOG\d+[A-Z0-9]*|NOG\d+[A-Z0-9]*|COG\d{4}|KOG\d{4})\b/gi,
+            panther: /\bPTHR\d{5}(?::SF\d+)?\b/gi,
+            cath: /\b\d+\.\d+\.\d+\.\d+\b/g
+        };
+        const urlFor = {
+            uniprot: id => `https://www.uniprot.org/uniprotkb/${encodeURIComponent(id)}`,
+            interpro: id => `https://www.ebi.ac.uk/interpro/entry/InterPro/${encodeURIComponent(id)}/`,
+            pfam: id => `https://www.ebi.ac.uk/interpro/entry/pfam/${encodeURIComponent(id)}/`,
+            go: id => `https://www.ebi.ac.uk/QuickGO/term/${encodeURIComponent(id)}`,
+            kegg: id => `https://www.genome.jp/entry/${(id)}`,
+            eggnog: id => `https://eggnog5.embl.de/#/app/results?target_nogs=${encodeURIComponent(id)}`,
+            panther: id => `https://www.pantherdb.org/panther/family.do?clsAccession=${encodeURIComponent(id)}`,
+            cath: id => `https://www.cathdb.info/superfamily/${encodeURIComponent(id)}`
+        };
+        const text = String(value ?? '');
+        const pattern = patterns[database];
+        const makeUrl = urlFor[database];
+        if (!pattern || !makeUrl) return escapeHtml(text) || 'N/A';
+        return escapeHtml(text).replace(pattern, id =>
+            `<a href="${makeUrl(id)}" target="_blank" rel="noopener noreferrer">${escapeHtml(id)}</a>`
+        ) || 'N/A';
+    }
+
+    function renderCrossReferenceId(item) {
+        const databaseName = String(item.database || '').toLowerCase();
+        const database = databaseName.includes('uniprot') ? 'uniprot'
+            : databaseName.includes('interpro') ? 'interpro'
+                : databaseName.includes('pfam') ? 'pfam'
+                    : databaseName.includes('gene ontology') || databaseName === 'go' ? 'go'
+                        : databaseName.includes('kegg') ? 'kegg'
+                            : databaseName.includes('eggnog') || databaseName.includes('ortholog') ? 'eggnog'
+                                : databaseName.includes('panther') ? 'panther'
+                                    : databaseName.includes('cath') ? 'cath' : null;
+        return database ? renderDatabaseLinks(item.id, database) : escapeHtml(item.id || '');
+    }
+
+    function renderUniProtDetails(entry) {
+        if (!entry || !Object.keys(entry).length) {
+            return '<p class="hint">Detailed UniProt fields are not present in this run\'s annotation data.</p>';
+        }
+
+        const description = entry.proteinDescription || {};
+        const proteinName = description.recommendedName?.fullName?.value
+            || description.submissionNames?.[0]?.fullName?.value
+            || description.alternativeNames?.[0]?.fullName?.value
+            || 'Not available';
+        const genes = (entry.genes || []).flatMap(gene => [
+            gene.geneName?.value,
+            ...(gene.synonyms || []).map(item => item.value),
+            ...(gene.orderedLocusNames || []).map(item => item.value),
+            ...(gene.orfNames || []).map(item => item.value)
+        ]).filter(Boolean);
+        const comments = entry.comments || [];
+        const features = entry.features || [];
+        const crossReferences = entry.crossReferences || [];
+        const keywords = entry.keywords || [];
+        const sequence = entry.sequence || {};
+        const commentDetails = comment => {
+            const values = [
+                ...(comment.texts || []).map(item => item.value),
+                ...(comment.subcellularLocations || []).flatMap(item => [
+                    item.location?.value,
+                    item.topology?.value,
+                    item.orientation?.value
+                ]),
+                ...(comment.cofactors || []).map(item => item.name),
+                comment.reaction?.name,
+                comment.molecule
+            ].filter(Boolean);
+            return values.length ? values.join('; ') : JSON.stringify(comment);
+        };
+
+        return `
+            <div class="grid">
+                <div class="field"><p class="hint">Entry</p><p class="strong">${escapeHtml(entry.entryType || 'N/A')}</p></div>
+                <div class="field"><p class="hint">UniProtKB ID</p><p class="strong">${renderDatabaseLinks(entry.primaryAccession || entry.uniProtkbId, 'uniprot')}</p></div>
+                <div class="field"><p class="hint">Protein existence</p><p class="strong">${escapeHtml(entry.proteinExistence || 'N/A')}</p></div>
+                <div class="field"><p class="hint">Annotation score</p><p class="strong">${escapeHtml(entry.annotationScore ?? 'N/A')}</p></div>
+                <div class="field"><p class="hint">Organism</p><p class="strong">${escapeHtml(entry.organism?.scientificName || 'N/A')} · taxon ${escapeHtml(entry.organism?.taxonId || 'N/A')}</p></div>
+                <div class="field"><p class="hint">Sequence</p><p class="strong">${escapeHtml(sequence.length ?? 'N/A')} aa · ${escapeHtml(sequence.molWeight ?? 'N/A')} Da</p></div>
+                <div class="field"><p class="hint">Protein name</p><p class="strong">${escapeHtml(proteinName)}</p></div>
+                <div class="field"><p class="hint">Gene names / loci</p><p class="strong">${escapeHtml([...new Set(genes)].join('; ') || 'N/A')}</p></div>
+                <div class="field"><p class="hint">Last annotation update</p><p class="strong">${escapeHtml(entry.entryAudit?.lastAnnotationUpdateDate || 'N/A')}</p></div>
+            </div>
+            ${entry.organism?.lineage?.length ? `<p><strong>Taxonomic lineage:</strong> ${escapeHtml(entry.organism.lineage.join(' › '))}</p>` : ''}
+            <h4>Comments and subcellular location</h4>
+            ${comments.length ? `<table class="data-table"><thead><tr><th>Type</th><th>Information</th></tr></thead><tbody>${comments.map(comment => `<tr><td>${escapeHtml(comment.commentType || 'Annotation')}</td><td>${escapeHtml(commentDetails(comment))}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">No UniProt comments available.</p>'}
+            <h4>Sequence features (${features.length})</h4>
+            ${features.length ? `<table class="data-table"><thead><tr><th>Type</th><th>Position</th><th>Description</th><th>Evidence</th></tr></thead><tbody>${features.map(feature => {
+                const start = feature.location?.start?.value ?? '?';
+                const end = feature.location?.end?.value ?? start;
+                const evidence = (feature.evidences || []).map(item => `${item.source || ''} ${item.id || ''}`.trim()).filter(Boolean).join('; ');
+                return `<tr><td>${escapeHtml(feature.type || '')}</td><td>${escapeHtml(start)}–${escapeHtml(end)}</td><td>${escapeHtml(feature.description || '')}</td><td>${escapeHtml(evidence)}</td></tr>`;
+            }).join('')}</tbody></table>` : '<p class="hint">No sequence features available.</p>'}
+            <h4>Keywords (${keywords.length})</h4>
+            <p>${keywords.length ? keywords.map(item => `${escapeHtml(item.name || item.id || '')}${item.category ? ` (${escapeHtml(item.category)})` : ''}`).join('; ') : 'No keywords available.'}</p>
+            <h4>Database cross-references (${crossReferences.length})</h4>
+            ${crossReferences.length ? `<table class="data-table"><thead><tr><th>Database</th><th>ID</th><th>Properties</th></tr></thead><tbody>${crossReferences.map(item => `<tr><td>${escapeHtml(item.database || '')}</td><td>${renderCrossReferenceId(item)}</td><td>${escapeHtml((item.properties || []).map(property => `${property.key || ''}: ${property.value || ''}`).join('; '))}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">No cross-references available.</p>'}
+            <details>
+                <summary>All useful UniProt entry fields</summary>
+                <pre class="track-block">${escapeHtml(JSON.stringify(entry, null, 2))}</pre>
+            </details>
+        `;
     }
 
     function buildSearchIndex(pts) {
@@ -260,7 +439,7 @@
 
     async function loadVolcano() {
         try {
-            const res = await fetch(`/runs/${runId}/volcano${runAccessQs}`);
+            const res = await fetch(`${window.TAP_BASE}/runs/${runId}/volcano${runAccessQs}`);
             const data = await res.json();
             const pts = data.points || [];
             volcanoPoints = pts;
@@ -292,7 +471,7 @@
                 customdata: hover ? arr.map(p => [p.gene_id, p.protein, p.log2FC, p.p_value, p.adj_p_value, truncateText(p.function, 140)]) : undefined,
                 hovertemplate: hover ? '<b>%{customdata[0]}</b><br>Protein: %{customdata[1]}<br>log2FC=%{customdata[2]:.2f}<br>p=%{customdata[3]:.1e}<br>FDR=%{customdata[4]:.1e}<br>Function: %{customdata[5]}<extra></extra>' : undefined,
                 hoverinfo: hover ? undefined : 'skip',
-                type: 'scattergl',
+                type: 'scatter',
                 hoverlabel: hover ? { bgcolor: color, bordercolor: '#0b0f19', font: { size: 13, color: '#ffffff' } } : undefined,
             });
 
@@ -316,7 +495,7 @@
                 ],
             };
 
-            Plotly.newPlot('volcano-plot', traces, layout, {displaylogo: false});
+            Plotly.newPlot('volcano-plot', traces, layout, { displaylogo: false, scrollZoom: false, responsive: true });
             volcanoHint.textContent = 'Click a point to view gene details.';
 
             document.getElementById('volcano-plot').on('plotly_click', ev => {
@@ -452,6 +631,91 @@
             });
     }
 
+    function renderTmhmmPosterior(posteriorUrl) {
+        const container = document.getElementById('tmhmm-posterior-plot');
+        if (!container || !posteriorUrl) return;
+        fetch(addToken(posteriorUrl))
+            .then(response => {
+                if (!response.ok) throw new Error('Posterior data unavailable');
+                return response.text();
+            })
+            .then(text => {
+                const rows = text.trim().split(/\r?\n/).slice(1);
+                const residues = [];
+                const inside = [];
+                const membrane = [];
+                const outside = [];
+                rows.forEach((row, index) => {
+                    const values = row.trim().split(/\s+/).map(Number);
+                    if (values.length < 3 || values.some(value => !Number.isFinite(value))) return;
+                    residues.push(index + 1);
+                    inside.push(values[0]);
+                    membrane.push(values[1]);
+                    outside.push(values[2]);
+                });
+                if (!residues.length) throw new Error('No posterior rows found');
+                Plotly.newPlot(container, [
+                    { x: residues, y: inside, name: 'Inside', mode: 'lines', line: { color: '#2563eb' } },
+                    { x: residues, y: membrane, name: 'Transmembrane', mode: 'lines', line: { color: '#dc6755', width: 2 }, fill: 'tozeroy', fillcolor: 'rgba(220,103,85,0.16)' },
+                    { x: residues, y: outside, name: 'Outside', mode: 'lines', line: { color: '#42a437' } }
+                ], {
+                    height: 280,
+                    margin: { l: 42, r: 12, t: 16, b: 38 },
+                    xaxis: { title: 'Residue', fixedrange: true },
+                    yaxis: { title: 'Posterior probability', range: [0, 1], fixedrange: true },
+                    legend: { orientation: 'h', y: 1.15 },
+                    paper_bgcolor: 'transparent',
+                    plot_bgcolor: 'transparent'
+                }, { responsive: true, displaylogo: false, scrollZoom: false });
+            })
+            .catch(() => {
+                container.innerHTML = '<p class="hint">Unable to load TMHMM posterior probabilities.</p>';
+            });
+    }
+
+    function renderSecondaryStructurePlot(probabilities) {
+        const container = document.getElementById('secondary-structure-plot');
+        if (!container) return;
+        if (!Array.isArray(probabilities) || !probabilities.length) {
+            container.innerHTML = '<p class="hint">No local GOR IV probability data is available for this run.</p>';
+            return;
+        }
+        if (typeof Plotly === 'undefined') {
+            container.innerHTML = '<p class="hint">The secondary-structure probability plot could not load.</p>';
+            return;
+        }
+        const residues = [];
+        const helix = [];
+        const strand = [];
+        const coil = [];
+        probabilities.forEach((values, index) => {
+            if (!Array.isArray(values) || values.length < 3) return;
+            const probabilitiesAtResidue = values.map(Number);
+            if (probabilitiesAtResidue.some(value => !Number.isFinite(value))) return;
+            residues.push(index + 1);
+            helix.push(probabilitiesAtResidue[0]);
+            strand.push(probabilitiesAtResidue[1]);
+            coil.push(probabilitiesAtResidue[2]);
+        });
+        if (!residues.length) {
+            container.innerHTML = '<p class="hint">No valid local GOR IV probabilities were returned.</p>';
+            return;
+        }
+        Plotly.newPlot(container, [
+            { x: residues, y: helix, name: 'Helix (H)', mode: 'lines', line: { color: '#d84a3a', width: 2 } },
+            { x: residues, y: strand, name: 'Strand (E)', mode: 'lines', line: { color: '#2563a8', width: 2 } },
+            { x: residues, y: coil, name: 'Coil (C)', mode: 'lines', line: { color: '#21825b', width: 2 } }
+        ], {
+            height: 280,
+            margin: { l: 48, r: 12, t: 16, b: 42 },
+            xaxis: { title: 'Residue', fixedrange: true },
+            yaxis: { title: 'GOR IV probability', range: [0, 1], fixedrange: true },
+            legend: { orientation: 'h', y: 1.15 },
+            paper_bgcolor: 'transparent',
+            plot_bgcolor: 'transparent'
+        }, { responsive: true, displaylogo: false, scrollZoom: false });
+    }
+
     function renderGene(detail) {
         geneTitle.textContent = detail.gene_id;
         const pvalText = formatSci(detail.p_value);
@@ -470,86 +734,70 @@
                 <div class="field"><p class="hint">FDR</p><p class="strong">${adjText}</p></div>
                 <div class="field"><p class="hint">Status</p><p class="strong">${regBadge}</p></div>
                 <div class="field"><p class="hint">Protein</p><p class="strong">${detail.protein_name || 'Unknown'}</p></div>
-                <div class="field"><p class="hint">UniProt</p><p class="strong">${detail.uniprot_id || 'N/A'}</p></div>
+                <div class="field"><p class="hint">UniProt</p><p class="strong">${renderDatabaseLinks(detail.uniprot_id, 'uniprot')}</p></div>
             </div>
 
             <h3>Sequence</h3>
-            <pre class="fasta-block">${detail.plain_sequence || detail.fasta || 'Not available'}</pre>
+            <pre class="fasta-block sequence-box">${detail.plain_sequence || detail.fasta || 'Not available'}</pre>
             ${detail.fasta_path ? `<a class="link" href="${addToken(detail.fasta_path)}" target="_blank">Download FASTA</a>` : ''}
 
+            <h3>UniProtKB entry</h3>
+            ${renderUniProtDetails(detail.uniprot_details)}
+
             <h3>Secondary structure</h3>
-            <p class="hint">Secondary structure predictions from GOR4 algorithm.</p>
-            <p class="hint">H = helix, E = Extended, C = coil.</p>
+            <p class="hint">${detail.secondary_prediction_method || 'Local GOR IV'} · H = helix, E = strand, C = coil.</p>
             ${plainSeq && (detail.psipred_states || detail.secondary_structure) ? `
                 <pre class="track-block">${plainSeq}\n${'|'.repeat(plainSeq.length)}\n${detail.psipred_states || detail.secondary_structure}</pre>
             ` : `<pre class="track-block">${detail.psipred_states || detail.secondary_structure || 'No prediction'}</pre>`}
-            ${(detail.gor4_state_img || detail.gor4_profile_img || detail.gor4_text_url) ? `
-                <div class="gor4-media">
-                    ${detail.gor4_state_img ? `<img src="${addToken(detail.gor4_state_img)}" class="gor4-img" alt="GOR4 residue state plot">` : ''}
-                    ${detail.gor4_profile_img ? `<img src="${addToken(detail.gor4_profile_img)}" class="gor4-img" alt="GOR4 confidence profile">` : ''}
-                </div>
-                ${detail.gor4_text_url ? `<a class="link" href="${addToken(detail.gor4_text_url)}" target="_blank" rel="noopener">Open GOR4 residue table</a>` : ''}
-            ` : ''}
+            <div id="secondary-structure-plot" class="secondary-structure-plot" aria-label="GOR IV secondary-structure probabilities"></div>
+            ${detail.secondary_probabilities_url ? `<a class="link" href="${addToken(detail.secondary_probabilities_url)}" target="_blank">Download GOR IV residue probabilities</a>` : ''}
 
             <h3>Transmembrane Helix Prediction</h3>
-            ${detail.tmhmm_plot ? `<img src="${addToken(detail.tmhmm_plot)}" class="tmhmm-img" alt="Phobius plot">` : '<p class="hint">No TM plot available.</p>'}
+            ${detail.tmhmm_plot ? `<img src="${addToken(detail.tmhmm_plot)}" class="tmhmm-img" alt="TMHMM 2.0 posterior probability plot">` : detail.tmhmm_posterior_url ? '<div id="tmhmm-posterior-plot" class="tmhmm-img" aria-label="TMHMM posterior probabilities"></div>' : '<p class="hint">No posterior probabilities available.</p>'}
             ${detail.tmhmm_text ? `<pre class="track-block">${detail.tmhmm_text}</pre>` : '<p class="hint">No TM text available.</p>'}
             ${detail.tmhmm_text_url ? `<a class="link" href="${addToken(detail.tmhmm_text_url)}" target="_blank">Download TM text</a>` : ''}
+            ${detail.tmhmm_summary_url ? ` <a class="link" href="${addToken(detail.tmhmm_summary_url)}" target="_blank">Summary</a>` : ''}
+            ${detail.tmhmm_annotation_url ? ` <a class="link" href="${addToken(detail.tmhmm_annotation_url)}" target="_blank">Residue annotation</a>` : ''}
+            ${detail.tmhmm_posterior_url ? ` <a class="link" href="${addToken(detail.tmhmm_posterior_url)}" target="_blank">Posterior data</a>` : ''}
 
             <h3>Orthologous groups</h3>
-            ${Array.isArray(detail.orthologs) && detail.orthologs.length ? `<table class="data-table"><thead><tr><th>EggNOG/OG ID</th></tr></thead><tbody>${detail.orthologs.map(o => `<tr><td>${o}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">No orthologous group IDs found.</p>'}
+            ${Array.isArray(detail.orthologs) && detail.orthologs.length ? `<table class="data-table"><thead><tr><th>EggNOG/OG ID</th></tr></thead><tbody>${detail.orthologs.map(o => `<tr><td>${renderDatabaseLinks(o, 'eggnog')}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">No orthologous group IDs found.</p>'}
 
             <h3>Function</h3>
             <p>${detail.function || 'Not available'}</p>
 
             <h3>Gene Ontology</h3>
             <div class="grid">
-                <div><p class="hint">Biological process</p><p>${detail.go_bp || 'N/A'}</p></div>
-                <div><p class="hint">Molecular function</p><p>${detail.go_mf || 'N/A'}</p></div>
-                <div><p class="hint">Cellular component</p><p>${detail.go_cc || 'N/A'}</p></div>
+                <div><p class="hint">Biological process</p><p>${renderDatabaseLinks(detail.go_bp, 'go')}</p></div>
+                <div><p class="hint">Molecular function</p><p>${renderDatabaseLinks(detail.go_mf, 'go')}</p></div>
+                <div><p class="hint">Cellular component</p><p>${renderDatabaseLinks(detail.go_cc, 'go')}</p></div>
             </div>
 
             <h3>Domains</h3>
             <div class="grid">
-                <div><p class="hint">InterPro</p><p>${detail.interpro_domains || 'N/A'}</p></div>
-                <div><p class="hint">Pfam</p><p>${detail.pfam_domains || 'N/A'}</p></div>
+                <div><p class="hint">InterPro</p><p>${renderDatabaseLinks(detail.interpro_domains, 'interpro')}</p></div>
+                <div><p class="hint">Pfam</p><p>${renderDatabaseLinks(detail.pfam_domains, 'pfam')}</p></div>
+                <div><p class="hint">PANTHER</p><p>${renderDatabaseLinks(detail.panther, 'panther')}</p></div>
+                <div><p class="hint">Keywords</p><p>${detail.keywords || 'N/A'}</p></div>
             </div>
 
-            <h3>KEGG pathways</h3>
-            ${Array.isArray(detail.kegg) && detail.kegg.length ? `<table class="data-table"><thead><tr><th>KO</th><th>Pathway</th></tr></thead><tbody>${detail.kegg.map(k => `<tr><td>${k.KO || ''}</td><td>${k.KEGG_pathway_id || ''}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">No KEGG data.</p>'}
-
-            <h3>EggNOG GO terms</h3>
-            ${Array.isArray(detail.eggnog_go) && detail.eggnog_go.length ? `<table class="data-table"><thead><tr><th>Category</th><th>GO</th><th>Name</th></tr></thead><tbody>${detail.eggnog_go.slice(0,30).map(g => `<tr><td>${g.GO_category || ''}</td><td>${g.GO_ID || ''}</td><td>${g.GO_name || ''}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">No EggNOG GO terms.</p>'}
-
-            <h3>EggNOG domains</h3>
-            ${Array.isArray(detail.eggnog_domains) && detail.eggnog_domains.length ? `<table class="data-table"><thead><tr><th>Domain</th><th>Type</th></tr></thead><tbody>${detail.eggnog_domains.slice(0,30).map(d => `<tr><td>${d.domain_name || ''}</td><td>${d.domain_type || ''}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">No EggNOG domain data.</p>'}
-
-            <h3>InterPro annotations</h3>
-            ${Array.isArray(detail.interpro) && detail.interpro.length ? `<table class="data-table"><thead><tr><th>ID</th><th>Name</th></tr></thead><tbody>${detail.interpro.slice(0,30).map(i => `<tr><td>${i.interpro_id || ''}</td><td>${i.domain_name || ''}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">No InterPro detail.</p>'}
+            <h3>KEGG</h3>
+            ${Array.isArray(detail.kegg) && detail.kegg.length ? `<table class="data-table"><thead><tr><th>KEGG ID</th></tr></thead><tbody>${detail.kegg.map(k => `<tr><td>${renderDatabaseLinks(k.KEGG_pathway_id || k.KEGG_gene_id, 'kegg')}</td></tr>`).join('')}</tbody></table>` : '<p class="hint">No KEGG data.</p>'}
 
             <h3><strong>Fold prediction & structure</strong></h3>
             <div style="width:100%; display:grid; gap:16px;">
                 <div class="field" style="width:100%; display:flex; flex-direction:column; gap:6px;">
                     <p class="hint"><strong>AlphaFold</strong></p>
-                    <div class="hint">Confidence: ${detail.alphafold_confidence || 'N/A'} | Version: ${detail.alphafold_version || 'N/A'}</div>
+                    <div class="hint">Confidence (pLDDT): ${detail.alphafold_confidence || 'N/A'} | Version: ${detail.alphafold_version || 'N/A'}</div>
                     <div id="ngl-viewer" style="width:100%; height:60vh; max-height:640px; border:1px solid var(--border); border-radius:8px;"></div>
                     ${detail.pdb_path ? `<a class="link" href="${addToken(detail.pdb_path)}" target="_blank">Download PDB</a>` : ''}
                     ${detail.uniprot_id ? `<div style="margin-top:8px;"><a class="btn secondary" href="https://alphafold.ebi.ac.uk/search/text/${encodeURIComponent((detail.uniprot_id || '').toUpperCase())}" target="_blank" rel="noreferrer">View on AlphaFold</a></div>` : ''}
                     ${detail.uniprot_id ? `
                         <div class="hint" style="margin-top:10px;"><strong>Residue level data</strong> · <a class="link" href="https://alphasync.stjude.org/display/${encodeURIComponent((detail.uniprot_id || '').toUpperCase())}" target="_blank" rel="noreferrer">Open on AlphaSync</a></div>
-                        <iframe src="https://alphasync.stjude.org/display/${encodeURIComponent((detail.uniprot_id || '').toUpperCase())}" style="width:100%; height:450px; border:1px solid var(--border); border-radius:8px; background:#fff;" loading="lazy"></iframe>
+                        <iframe src="https://alphasync.stjude.org/display/${encodeURIComponent((detail.uniprot_id || '').toUpperCase())}" style="width:100%; height:1080px; border:1px solid var(--border); border-radius:8px; background:#fff;" loading="lazy"></iframe>
                     ` : '<div class="hint">Residue-level data unavailable (missing UniProt ID).</div>'}
                 </div>
-                <div class="field" style="width:100%; display:flex; flex-direction:column; gap:6px;">
-                    <p class="hint"><strong>Fold prediction</strong></p>
-                    ${detail.rapid_fold_pdb ? `<a class="link" href="${addToken(detail.rapid_fold_pdb)}" target="_blank">Download ESMFold PDB</a>` : ''}
-                    ${paeUrl ? `
-                        <div style="margin-top:10px;">
-                            <p class="hint">ESMFold (sequence-based)</p>
-                            <iframe title="ESMFold" src="${paeUrl}" style="width:100%; height:520px; border:1px solid var(--border); border-radius:8px; background:#fff;"></iframe>
-                        </div>
-                    ` : '<div class="hint" style="margin-top:6px;">ESMFold unavailable (missing or short sequence).</div>'}
-                </div>
+                
             </div>
 
             <h3>PSI-BLAST</h3>
@@ -575,7 +823,7 @@
             ${Array.isArray(detail.string_edges) && detail.string_edges.length ? `
                 <h4>Interaction scores</h4>
                 <table class="data-table"><thead><tr><th>Source</th><th>Target</th><th>Score</th></tr></thead><tbody>
-                ${detail.string_edges.slice(0,50).map(e => `<tr><td>${e.source || ''}</td><td>${e.target || ''}</td><td>${e.combined_score?.toFixed ? e.combined_score.toFixed(3) : (e.combined_score || '')}</td></tr>`).join('')}
+                ${detail.string_edges.slice(0, 50).map(e => `<tr><td>${e.source || ''}</td><td>${e.target || ''}</td><td>${e.combined_score?.toFixed ? e.combined_score.toFixed(3) : (e.combined_score || '')}</td></tr>`).join('')}
                 </tbody></table>
             ` : '<p class="hint">No interaction scores available.</p>'}
             ${detail.string_edges_path ? `<a class="link" href="${addToken(detail.string_edges_path)}" target="_blank">Download full interaction table</a>` : ''}
@@ -585,12 +833,13 @@
         renderCytoscape(detail.string_edges, queryId);
         renderNGL(detail.pdb);
         renderESM(detail.rapid_fold_pdb);
+        renderSecondaryStructurePlot(detail.secondary_probabilities);
+        if (!detail.tmhmm_plot) renderTmhmmPosterior(detail.tmhmm_posterior_url);
         const geneTarget = document.getElementById('gene-panel');
         if (geneTarget) {
+            geneTarget.closest('.reveal-up')?.classList.add('is-visible');
             requestAnimationFrame(() => {
-                const offset = 190;
-                const top = geneTarget.getBoundingClientRect().top + window.scrollY - offset;
-                window.scrollTo({ top, behavior: 'smooth' });
+                geneTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
             });
         }
     }
@@ -598,7 +847,7 @@
     async function loadGene(geneId) {
         genePanel.innerHTML = '<p class="hint">Loading gene details...</p>';
         try {
-            const res = await fetch(`/runs/${runId}/gene/${geneId}${runAccessQs}`);
+            const res = await fetch(`${window.TAP_BASE}/runs/${runId}/gene/${geneId}${runAccessQs}`);
             if (!res.ok) throw new Error('Gene not found');
             const detail = await res.json();
             renderGene(detail);
@@ -631,7 +880,7 @@
             }
         } catch (err) {
             console.error(err);
-            genePanel.innerHTML = '<p class="hint">Failed to load gene details.</p>';
+            genePanel.innerHTML = `<p class="hint">Gene details failed to load: ${escapeHtml(err.message || 'unknown error')}.</p>`;
         }
     }
 
@@ -640,7 +889,7 @@
     setZoomControlsEnabled(false);
 
     async function autoDownloadAccessToken() {
-        const tokenPath = `/runs/${runId}/files/access_token.txt${runAccessQs}`;
+        const tokenPath = `${window.TAP_BASE}/runs/${runId}/files/access_token.txt${runAccessQs}`;
         try {
             const resp = await fetch(tokenPath, { cache: 'no-store' });
             if (!resp.ok) throw new Error('Token file not ready');
@@ -665,9 +914,210 @@
             document.body.appendChild(a);
             a.click();
             setTimeout(() => a.remove(), 500);
-            setTimeout(() => autoDownloadAccessToken().catch(() => {}), 1500);
+            setTimeout(() => autoDownloadAccessToken().catch(() => { }), 1500);
         }
     }
-    autoDownloadAccessToken().catch(() => {});
+    autoDownloadAccessToken().catch(() => { });
+
+    (function setupChat() {
+        const toggleBtn = document.getElementById('chat-toggle-btn');
+        const closeBtn = document.getElementById('chat-close-btn');
+        const backdrop = document.getElementById('chat-backdrop');
+        const panel = document.getElementById('chat-panel');
+        const messagesEl = document.getElementById('chat-messages');
+        const typingEl = document.getElementById('chat-typing');
+        const form = document.getElementById('chat-form');
+        const input = document.getElementById('chat-input');
+
+        if (!toggleBtn || !panel || !form || !messagesEl) return;
+
+        const MAX_HISTORY = 20;
+        let history = [];
+        let sending = false;
+
+        function escapeHtml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function safeMarkdownToHtml(text) {
+            let escaped = escapeHtml(text || '');
+            escaped = escaped.replace(/\[([^\[\]]{1,200})\]\((https?:\/\/[^\s()]{1,500})\)/g, (m, label, url) => {
+                return `<a href="${url}" target="_blank" rel="noopener noreferrer nofollow">${label}</a>`;
+            });
+            escaped = escaped.replace(/\*\*([^\*]{1,300})\*\*/g, '<strong>$1</strong>');
+            escaped = escaped.replace(/\n/g, '<br>');
+            return escaped;
+        }
+
+        function openPanel() {
+            panel.classList.add('is-open');
+            panel.setAttribute('aria-hidden', 'false');
+            backdrop.classList.add('is-open');
+            toggleBtn.setAttribute('aria-expanded', 'true');
+            input.focus();
+        }
+
+        function closePanel() {
+            panel.classList.remove('is-open');
+            panel.setAttribute('aria-hidden', 'true');
+            backdrop.classList.remove('is-open');
+            toggleBtn.setAttribute('aria-expanded', 'false');
+        }
+
+        toggleBtn.addEventListener('click', () => {
+            if (panel.classList.contains('is-open')) closePanel(); else openPanel();
+        });
+        if (closeBtn) closeBtn.addEventListener('click', closePanel);
+        if (backdrop) backdrop.addEventListener('click', closePanel);
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && panel.classList.contains('is-open')) closePanel();
+        });
+
+        function addMessage(role, text) {
+            const wrap = document.createElement('div');
+            wrap.className = `chat-msg chat-msg--${role}`;
+            const p = document.createElement('p');
+            p.innerHTML = safeMarkdownToHtml(text);
+            wrap.appendChild(p);
+            messagesEl.appendChild(wrap);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+            return wrap;
+        }
+
+        async function loadHistory() {
+            try {
+                const res = await fetch(`${window.TAP_BASE}/runs/${runId}/chat/history${runAccessQs}`);
+                if (!res.ok) return;
+                const data = await res.json();
+                const msgs = Array.isArray(data.messages) ? data.messages : [];
+                msgs.forEach(m => {
+                    if (m.role === 'user' || m.role === 'assistant') {
+                        addMessage(m.role, m.content || '');
+                        history.push({ role: m.role, content: m.content || '' });
+                    }
+                });
+                history = history.slice(-MAX_HISTORY);
+            } catch (err) {
+                console.error('Failed to load chat history', err);
+            }
+        }
+
+        async function sendMessage(question) {
+            addMessage('user', question);
+            history.push({ role: 'user', content: question });
+            history = history.slice(-MAX_HISTORY);
+
+            const assistantBubble = addMessage('assistant', '');
+            const assistantP = assistantBubble.querySelector('p');
+            typingEl.hidden = false;
+
+            let accumulated = '';
+            try {
+                const res = await fetch(`${window.TAP_BASE}/runs/${runId}/chat/stream${runAccessQs}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        question,
+                        history: history.slice(0, -1),
+                        access_token: runAccessToken || undefined,
+                        log2fc_threshold: log2fcThresh,
+                        pval_threshold: pvalThresh,
+                    }),
+                });
+
+                if (!res.ok || !res.body) {
+                    let errText = 'Sorry, the assistant is unavailable right now.';
+                    if (res.status === 429) {
+                        errText = "You're sending messages a bit fast — please wait a moment and try again.";
+                    } else if (res.status === 400) {
+                        try {
+                            const errBody = await res.json();
+                            if (errBody && errBody.detail) errText = String(errBody.detail);
+                        } catch (err) { /* ignore */ }
+                    }
+                    assistantP.innerHTML = safeMarkdownToHtml(errText);
+                    assistantBubble.classList.add('chat-msg--error');
+                    history.pop();
+                    return;
+                }
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const parts = buffer.split('\n\n');
+                    buffer = parts.pop() || '';
+                    for (const part of parts) {
+                        const line = part.trim();
+                        if (!line.startsWith('data:')) continue;
+                        const jsonStr = line.slice(5).trim();
+                        if (!jsonStr) continue;
+                        let evt;
+                        try {
+                            evt = JSON.parse(jsonStr);
+                        } catch (err) {
+                            continue;
+                        }
+                        if (evt.event === 'token') {
+                            accumulated += evt.token;
+                            assistantP.innerHTML = safeMarkdownToHtml(accumulated);
+                            messagesEl.scrollTop = messagesEl.scrollHeight;
+                        } else if (evt.event === 'done') {
+                            accumulated = evt.answer || accumulated;
+                            assistantP.innerHTML = safeMarkdownToHtml(accumulated);
+                            history.push({ role: 'assistant', content: accumulated });
+                            history = history.slice(-MAX_HISTORY);
+                        } else if (evt.event === 'error') {
+                            accumulated = evt.message || 'Something went wrong.';
+                            assistantP.innerHTML = safeMarkdownToHtml(accumulated);
+                            assistantBubble.classList.add('chat-msg--error');
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error('Chat stream failed', err);
+                assistantP.innerHTML = safeMarkdownToHtml('Sorry, something went wrong while contacting the assistant.');
+                assistantBubble.classList.add('chat-msg--error');
+            } finally {
+                typingEl.hidden = true;
+                messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+        }
+
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            if (sending) return;
+            const question = input.value.trim();
+            if (!question) return;
+            input.value = '';
+            sending = true;
+            input.disabled = true;
+            try {
+                await sendMessage(question);
+            } finally {
+                sending = false;
+                input.disabled = false;
+                input.focus();
+            }
+        });
+
+        input.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                form.requestSubmit();
+            }
+        });
+
+        loadHistory();
+    })();
 </script>
 {% endblock %}

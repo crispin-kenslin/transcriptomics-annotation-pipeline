@@ -10,16 +10,46 @@
         </div>
         <div class="species-chip" id="species-chip">Auto plant detection</div>
     </div>
-    <form class="grid" action="/run" method="post" enctype="multipart/form-data">
+
+    {% if error %}
+    <div class="alert-banner alert-banner--error" id="form-error" role="alert">
+        <span class="alert-banner__icon" aria-hidden="true">!</span>
+        <div>
+            <strong>We couldn't start that run</strong>
+            <p>{{ error }}</p>
+        </div>
+        <button type="button" class="alert-banner__close" onclick="this.closest('.alert-banner').remove()"
+            aria-label="Dismiss">×</button>
+    </div>
+    {% endif %}
+    <div class="alert-banner alert-banner--error" id="client-error" role="alert" hidden>
+        <span class="alert-banner__icon" aria-hidden="true">!</span>
+        <div>
+            <strong>Check your file before uploading</strong>
+            <p id="client-error-text"></p>
+        </div>
+        <button type="button" class="alert-banner__close" onclick="this.closest('.alert-banner').style.display='none'"
+            aria-label="Dismiss">×</button>
+    </div>
+
+    <form class="grid" action="{{ app_url(request, '/run') }}" method="post" enctype="multipart/form-data" id="run-form">
         <div class="field span-2">
-            <label for="data_file">Expression file (CSV)</label>
-            <input id="data_file" name="data_file" type="file" accept=".csv" required />
-            <p class="hint">Minimum columns: gene ID, log2 fold change, and p-value.</p>
+            <label for="data_file">Expression file</label>
+            <input id="data_file" name="data_file" type="file"
+                accept="{{ allowed_extensions|default(['.csv', '.tsv', '.txt', '.xlsx', '.xls'])|join(',') }}"
+                required />
+            <p class="hint">
+                Minimum columns: gene ID, log2 fold change, and p-value. Accepted formats:
+                {{ allowed_extensions|default(['.csv', '.tsv', '.txt', '.xlsx', '.xls'])|join(', ') }} &middot;
+                up to {{ max_upload_mb|default(25) }} MB. Files are screened for malformed content,
+                macros, and unsafe formulas before a run starts.
+            </p>
+            <p class="hint" id="file-picked-hint" hidden></p>
         </div>
         <div class="field span-2">
             <label for="job_name">Job name (optional)</label>
             <input id="job_name" name="job_name" type="text" maxlength="120" placeholder="e.g. drought_vs_control" />
-            <p class="hint">Appears in history, logs, and the Dash interface.</p>
+            <p class="hint">Appears in history, logs, and the interface.</p>
         </div>
         <div class="field span-2">
             <label for="species_key">Plant species</label>
@@ -33,28 +63,28 @@
         </div>
         <div class="field">
             <label for="gene_col">Gene ID column</label>
-            <select id="gene_col" name="gene_col" required>
-                <option value="" disabled selected>Select after upload</option>
-            </select>
+            <input id="gene_col" name="gene_col" type="text" list="gene_col_options" autocomplete="off" required
+                placeholder="Upload a file, or type the column name" />
+            <datalist id="gene_col_options"></datalist>
         </div>
         <div class="field">
             <label for="log2fc_col">log2FC column</label>
-            <select id="log2fc_col" name="log2fc_col" required>
-                <option value="" disabled selected>Select after upload</option>
-            </select>
+            <input id="log2fc_col" name="log2fc_col" type="text" list="log2fc_col_options" autocomplete="off" required
+                placeholder="Upload a file, or type the column name" />
+            <datalist id="log2fc_col_options"></datalist>
         </div>
         <div class="field">
             <label for="pval_col">p-value column</label>
-            <select id="pval_col" name="pval_col" required>
-                <option value="" disabled selected>Select after upload</option>
-            </select>
+            <input id="pval_col" name="pval_col" type="text" list="pval_col_options" autocomplete="off" required
+                placeholder="Upload a file, or type the column name" />
+            <datalist id="pval_col_options"></datalist>
         </div>
         <div class="field" id="adj-field" style="display:none;">
             <label for="adj_p_col">Adjusted p-value column</label>
-            <select id="adj_p_col" name="adj_p_col">
-                <option value="" selected>Auto-calculate during run</option>
-            </select>
-            <p class="hint">Select a Benjamini–Hochberg/FDR column if your CSV already contains one.</p>
+            <input id="adj_p_col" name="adj_p_col" type="text" list="adj_p_col_options" autocomplete="off"
+                placeholder="Leave blank to auto-calculate" />
+            <datalist id="adj_p_col_options"></datalist>
+            <p class="hint">Fill in a Benjamini–Hochberg/FDR column name if your file already contains one.</p>
         </div>
         <div class="field">
             <label for="log2fc_threshold">log2FC threshold</label>
@@ -75,6 +105,15 @@
             </label>
             <p class="hint">When enabled, TAP uses your adjusted column or computes BH corrections before filtering.</p>
         </div>
+        <div class="field span-2">
+            <label for="annotation_target">Annotation Target</label>
+            <select id="annotation_target" name="annotation_target">
+                <option value="outliers" selected>Only outlier genes</option>
+                <option value="all">All significant genes (log2FC & p-value threshold)</option>
+            </select>
+            <p class="hint">Choose whether to annotate only the most extreme outliers or all genes passing your
+                thresholds.</p>
+        </div>
         <div class="actions span-2">
             <button type="submit" class="btn primary">Run pipeline</button>
         </div>
@@ -82,17 +121,42 @@
 </section>
 
 <script>
+    const ALLOWED_EXTENSIONS = {{ (allowed_extensions |default (['.csv', '.tsv', '.txt', '.xlsx', '.xls']))| tojson }};
+    const MAX_UPLOAD_MB = {{ max_upload_mb|default (25) }};
+    const TEXT_PREVIEW_EXTENSIONS = new Set(['.csv', '.tsv', '.txt']);
+
+    const runForm = document.getElementById('run-form');
     const fileInput = document.getElementById('data_file');
+    const filePickedHint = document.getElementById('file-picked-hint');
+    const clientError = document.getElementById('client-error');
+    const clientErrorText = document.getElementById('client-error-text');
     const speciesSelect = document.getElementById('species_key');
     const speciesChip = document.getElementById('species-chip');
     const fdrToggle = document.getElementById('use_fdr');
     const adjField = document.getElementById('adj-field');
     const adjSelect = document.getElementById('adj_p_col');
-    const selects = {
+    const dataLists = {
+        gene: document.getElementById('gene_col_options'),
+        log2fc: document.getElementById('log2fc_col_options'),
+        pval: document.getElementById('pval_col_options'),
+        adj: document.getElementById('adj_p_col_options')
+    };
+    const fields = {
         gene: document.getElementById('gene_col'),
         log2fc: document.getElementById('log2fc_col'),
         pval: document.getElementById('pval_col')
     };
+
+    function showClientError(message) {
+        clientErrorText.textContent = message;
+        clientError.hidden = false;
+        clientError.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    function extensionOf(filename) {
+        const idx = filename.lastIndexOf('.');
+        return idx >= 0 ? filename.slice(idx).toLowerCase() : '';
+    }
 
     function setChipText(text) {
         if (speciesChip) speciesChip.textContent = text;
@@ -122,8 +186,8 @@
         fdrToggle.addEventListener('change', toggleAdjField);
     }
 
-    function clearOptions(sel, includeDefault = false) {
-        sel.innerHTML = includeDefault ? '<option value="" selected>Auto-calculate during run</option>' : '<option value="" disabled selected>Select after upload</option>';
+    function clearDatalists() {
+        Object.values(dataLists).forEach(dl => { if (dl) dl.innerHTML = ''; });
     }
 
     function populateColumns(cols) {
@@ -133,57 +197,104 @@
             pval: ['p_value', 'pvalue', 'pval'],
             adj: ['adj_p_value', 'padj', 'FDR', 'q_value']
         };
-        clearOptions(selects.gene);
-        clearOptions(selects.log2fc);
-        clearOptions(selects.pval);
-        if (adjSelect) clearOptions(adjSelect, true);
+        clearDatalists();
         cols.forEach(col => {
-            [selects.gene, selects.log2fc, selects.pval].forEach(sel => {
+            Object.values(dataLists).forEach(dl => {
+                if (!dl) return;
                 const opt = document.createElement('option');
                 opt.value = col;
-                opt.textContent = col;
-                sel.appendChild(opt.cloneNode(true));
+                dl.appendChild(opt);
             });
-            if (adjSelect) {
-                const adjOpt = document.createElement('option');
-                adjOpt.value = col;
-                adjOpt.textContent = col;
-                adjSelect.appendChild(adjOpt);
-            }
         });
-        const pickDefault = (sel, prefs) => {
+        const pickDefault = (field, prefs) => {
+            if (field.value) return; // don't clobber a value the user already typed
             for (const pref of prefs) {
-                const opt = [...sel.options].find(o => o.value.toLowerCase() === pref.toLowerCase());
-                if (opt) { sel.value = opt.value; return; }
+                const match = cols.find(c => c.toLowerCase() === pref.toLowerCase());
+                if (match) { field.value = match; return; }
             }
         };
-        pickDefault(selects.gene, defaults.gene);
-        pickDefault(selects.log2fc, defaults.log2fc);
-        pickDefault(selects.pval, defaults.pval);
-        if (adjSelect) pickDefault(adjSelect, defaults.adj);
+        pickDefault(fields.gene, defaults.gene);
+        pickDefault(fields.log2fc, defaults.log2fc);
+        pickDefault(fields.pval, defaults.pval);
+    }
+
+    function detectDelimiter(headerLine) {
+        if (headerLine.includes('\t')) return '\t';
+        return ',';
     }
 
     fileInput?.addEventListener('change', e => {
+        clientError.hidden = true;
         const file = e.target.files?.[0];
+        clearDatalists();
+        [fields.gene, fields.log2fc, fields.pval].forEach(f => { f.value = ''; });
+
         if (!file) {
-            Object.values(selects).forEach(sel => clearOptions(sel));
-            if (adjSelect) clearOptions(adjSelect, true);
+            filePickedHint.hidden = true;
             return;
         }
+
+        const ext = extensionOf(file.name);
+        const sizeMb = file.size / (1024 * 1024);
+        filePickedHint.hidden = false;
+        filePickedHint.textContent = `${file.name} · ${sizeMb.toFixed(2)} MB`;
+
+        if (!ALLOWED_EXTENSIONS.includes(ext)) {
+            showClientError(`"${ext || 'unknown'}" is not a supported file type. Please upload one of: ${ALLOWED_EXTENSIONS.join(', ')}.`);
+            fileInput.value = '';
+            filePickedHint.hidden = true;
+            return;
+        }
+        if (sizeMb > MAX_UPLOAD_MB) {
+            showClientError(`This file is ${sizeMb.toFixed(1)} MB, which exceeds the ${MAX_UPLOAD_MB} MB limit.`);
+            fileInput.value = '';
+            filePickedHint.hidden = true;
+            return;
+        }
+
+        if (!TEXT_PREVIEW_EXTENSIONS.has(ext)) {
+            // Excel workbooks can't be header-previewed without a parsing
+            // library in the browser; the server still validates and
+            // reads them safely. Let the user type column names instead.
+            filePickedHint.textContent += ' · type the column names below exactly as they appear in the sheet';
+            return;
+        }
+
         const reader = new FileReader();
         reader.onload = ev => {
             try {
-                const text = ev.target.result;
-                const firstLine = String(text).split(/\r?\n/)[0];
-                const cols = firstLine.split(',').map(c => c.trim()).filter(Boolean);
+                const text = String(ev.target.result);
+                const firstLine = text.split(/\r?\n/)[0] || '';
+                const delimiter = detectDelimiter(firstLine);
+                const cols = firstLine.split(delimiter).map(c => c.trim().replace(/^"|"$/g, '')).filter(Boolean);
                 if (cols.length) populateColumns(cols);
             } catch (err) {
                 console.error('Header parse failed', err);
-                Object.values(selects).forEach(sel => clearOptions(sel));
-                if (adjSelect) clearOptions(adjSelect, true);
             }
         };
-        reader.readAsText(file.slice(0, 2000));
+        reader.readAsText(file.slice(0, 4000));
+    });
+
+    runForm?.addEventListener('submit', evt => {
+        const file = fileInput?.files?.[0];
+        if (!file) return; // let native "required" handle it
+        const ext = extensionOf(file.name);
+        const sizeMb = file.size / (1024 * 1024);
+        if (!ALLOWED_EXTENSIONS.includes(ext)) {
+            evt.preventDefault();
+            showClientError(`"${ext || 'unknown'}" is not a supported file type. Please upload one of: ${ALLOWED_EXTENSIONS.join(', ')}.`);
+            return;
+        }
+        if (sizeMb > MAX_UPLOAD_MB) {
+            evt.preventDefault();
+            showClientError(`This file is ${sizeMb.toFixed(1)} MB, which exceeds the ${MAX_UPLOAD_MB} MB limit.`);
+            return;
+        }
+        const submitBtn = runForm.querySelector('button[type="submit"]');
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Validating & starting run…';
+        }
     });
 
     document.querySelectorAll('.created-at').forEach(el => {
@@ -204,7 +315,7 @@
             btn.disabled = true;
             btn.textContent = 'Stopping...';
             try {
-                const res = await fetch(`/runs/${runId}/stop`, { method: 'POST' });
+                const res = await fetch(`${window.TAP_BASE}/runs/${runId}/stop`, { method: 'POST' });
                 if (!res.ok) throw new Error('Request failed');
                 location.reload();
             } catch (err) {
@@ -223,7 +334,7 @@
             evt.preventDefault();
             const runId = resumeInput.value.trim();
             if (!runId) return;
-            window.location.href = `/runs/${encodeURIComponent(runId)}/results`;
+            window.location.href = `${window.TAP_BASE}/runs/${encodeURIComponent(runId)}/results`;
         });
     }
 

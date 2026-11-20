@@ -1,5 +1,27 @@
 import os
 import sys
+from pathlib import Path
+
+
+def _load_dotenv(path: Path):
+    if not path.exists():
+        return
+    try:
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+    except Exception as exc:
+        print(f"[startup] could not read .env file at {path}: {exc}")
+
+
+_load_dotenv(Path(__file__).parent / ".env")
+
 import uuid
 import json
 import tempfile
@@ -11,7 +33,6 @@ import secrets
 import hashlib
 from collections import deque
 from datetime import datetime, timedelta
-from pathlib import Path
 from threading import Lock, Thread
 from typing import Optional, Tuple
 import signal
@@ -19,7 +40,7 @@ import signal
 import pandas as pd
 import requests
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import numpy as np
@@ -30,40 +51,79 @@ from plant_registry import (
     get_species_config,
     list_species_options,
 )
+from file_validation import (
+    ALLOWED_EXTENSIONS,
+    MAX_UPLOAD_BYTES,
+    FileValidationError,
+    enforce_dataframe_limits,
+    guess_extension,
+    sanitize_filename,
+    sanitize_form_text,
+    scan_with_clamav,
+    stream_upload_to_disk,
+    validate_uploaded_file,
+)
+from security import (
+    RUN_SUBMIT_LIMITER,
+    CHAT_MESSAGE_LIMITER,
+    CHAT_BURST_LIMITER,
+    SecurityHeadersMiddleware,
+    extract_client_ip,
+)
+import chat_service
 
 ROOT_DIR = Path(__file__).parent
 RUNS_DIR = ROOT_DIR / "runs"
 RUNS_DIR.mkdir(exist_ok=True)
-PHOBIUS_BASE = "https://www.ebi.ac.uk/Tools/services/rest/phobius"
-PHOBIUS_EMAIL = os.getenv("PHOBIUS_EMAIL", "admin@tapipe.res.in")
-PHOBIUS_MAX_WAIT = float(os.getenv("PHOBIUS_MAX_WAIT", "45"))
-PHOBIUS_POLL_INTERVAL = float(os.getenv("PHOBIUS_POLL_INTERVAL", "0.5"))
-PHOBIUS_STATUS_TIMEOUT = float(os.getenv("PHOBIUS_STATUS_TIMEOUT", "10"))
-PHOBIUS_RESULT_TIMEOUT = float(os.getenv("PHOBIUS_RESULT_TIMEOUT", "10"))
-PHOBIUS_RESULT_RETRIES = int(os.getenv("PHOBIUS_RESULT_RETRIES", "40"))
-PHOBIUS_RESULT_DELAY = float(os.getenv("PHOBIUS_RESULT_DELAY", "0.5"))
 FAVICON_PATH = ROOT_DIR / "favicon.ico"
 RUN_RETENTION_DAYS = int(os.getenv("RUN_RETENTION_DAYS", "7"))
 RUN_RETENTION_DELTA = timedelta(days=RUN_RETENTION_DAYS)
+FORCE_HTTPS = os.getenv("FORCE_HTTPS", "0").strip().lower() in {"1", "true", "yes", "on"}
+APP_PREFIX = os.getenv("APP_PREFIX", "/TAP").strip().rstrip("/")
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 app = FastAPI(title="Transcriptomics Pipeline Web Server", version="1.0.0")
+app.add_middleware(SecurityHeadersMiddleware, force_https=FORCE_HTTPS)
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 
 
+def _app_url(request: Request, path: str = "") -> str:
+    root_path = request.scope.get("root_path", "").rstrip("/")
+    suffix = f"/{path.lstrip('/')}" if path else ""
+    return f"{root_path}{suffix}" or "/"
+
+
+TEMPLATES.env.globals["app_url"] = _app_url
+
+
+@app.middleware("http")
+async def application_prefix(request: Request, call_next):
+    forwarded_prefix = request.headers.get("x-forwarded-prefix", "").strip().rstrip("/")
+    has_forwarded_prefix = forwarded_prefix.startswith("/")
+    prefix = forwarded_prefix if has_forwarded_prefix else APP_PREFIX
+    path = request.scope.get("path", "")
+    if prefix and (path == prefix or path.startswith(f"{prefix}/")):
+        request.scope["root_path"] = prefix
+    elif has_forwarded_prefix:
+        request.scope["root_path"] = prefix
+    else:
+        return PlainTextResponse("Not Found", status_code=404)
+    return await call_next(request)
+
+
+@app.exception_handler(HTTPException)
+async def _friendly_http_exception_handler(request: Request, exc: HTTPException):
+
+    wants_html = "text/html" in request.headers.get("accept", "")
+    if request.scope.get("path") == "/run" and request.method == "POST" and wants_html:
+        from urllib.parse import quote
+
+        return RedirectResponse(url=_app_url(request, f"/run?error={quote(str(exc.detail))}"), status_code=303)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
 def _extract_client_ip(request: Request) -> str:
-    # Use proxy-forwarded client address when available.
-    forwarded_for = request.headers.get("x-forwarded-for", "")
-    if forwarded_for:
-        first = forwarded_for.split(",")[0].strip()
-        if first:
-            return first
-    real_ip = request.headers.get("x-real-ip", "").strip()
-    if real_ip:
-        return real_ip
-    if request.client and request.client.host:
-        return request.client.host
-    return "unknown"
+    return extract_client_ip(request)
 
 
 def _build_access_token(client_ip: str) -> str:
@@ -250,7 +310,7 @@ class RunManager:
         self._cleanup_expired_runs()
         self._load_all_from_disk()
         with self.lock:
-            # prune entries whose run directory was deleted
+                                                           
             to_delete = []
             for rid, info in self.runs.items():
                 run_dir = info.get("run_dir", Path())
@@ -365,6 +425,7 @@ class RunManager:
                     "RUN_DASH_SERVER": "0",
                     "REQUEST_CLIENT_IP": str(info["params"].get("client_ip", info.get("owner_ip", "unknown"))),
                     "REQUEST_CLIENT_API_KEY": str(info["params"].get("client_api_key", "")),
+                    "ANNOTATION_TARGET": str(info["params"].get("annotation_target", "outliers")),
                 }
             )
 
@@ -382,8 +443,8 @@ class RunManager:
             env["UNIPROT_TAX_ID"] = str(info["params"].get("uniprot_tax_id", 39947))
             env["STRING_SPECIES"] = str(info["params"].get("string_species_id", 39947))
 
-            # Assume main_final.py is in the same folder as server.py
-            main_py_path = Path(__file__).parent / "main_final.py"
+                                                                     
+            main_py_path = Path(__file__).parent / "main.py"
             cmd = [
                 sys.executable,
                 "-u",
@@ -410,7 +471,7 @@ class RunManager:
                         info["pid"] = process.pid
                         self.procs[run_id] = process
                     self._save_meta(info)
-                except Exception as exc:  # pragma: no cover
+                except Exception as exc:                    
                     with self.lock:
                         info["status"] = "failed"
                         info["updated_at"] = datetime.utcnow()
@@ -418,7 +479,7 @@ class RunManager:
                     log_file.write(f"Failed to start pipeline: {exc}\n")
                     return
 
-                for line in process.stdout:  # type: ignore[attr-defined]
+                for line in process.stdout:                              
                     clean = line.rstrip("\n")
                     info["logs"].append(clean)
                     log_file.write(line)
@@ -487,7 +548,7 @@ class RunManager:
         if status in {"completed", "failed", "stopped"}:
             return False
 
-        # mark as stopping
+                          
         with self.lock:
             info["status"] = "stopped"
             info["updated_at"] = datetime.utcnow()
@@ -551,6 +612,11 @@ def _prepare_expression(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Unable to read input file: {exc}")
 
+    try:
+        enforce_dataframe_limits(len(df), len(df.columns))
+    except FileValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     adj_p_col_clean = (adj_p_col or "").strip()
     required_cols = [gene_col, log2fc_col, pval_col]
     if adj_p_col_clean:
@@ -586,6 +652,7 @@ async def home(request: Request):
     for r in runs:
         r["name"] = r.get("name") or (r.get("params", {}) or {}).get("job_name")
     return TEMPLATES.TemplateResponse(
+        request,
         "index.html",
         {
             "request": request,
@@ -603,12 +670,16 @@ async def run_launcher(request: Request):
     for r in runs:
         r["name"] = r.get("name") or (r.get("params", {}) or {}).get("job_name")
     return TEMPLATES.TemplateResponse(
+        request,
         "run_launcher.html",
         {
             "request": request,
             "runs": runs,
             "species_options": list_species_options(),
             "default_species": DEFAULT_SPECIES_KEY,
+            "error": request.query_params.get("error"),
+            "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
+            "allowed_extensions": sorted(ALLOWED_EXTENSIONS),
         },
     )
 
@@ -620,6 +691,7 @@ async def history_page(request: Request):
     for r in runs:
         r["name"] = r.get("name") or (r.get("params", {}) or {}).get("job_name")
     return TEMPLATES.TemplateResponse(
+        request,
         "history.html",
         {
             "request": request,
@@ -631,6 +703,7 @@ async def history_page(request: Request):
 @app.get("/species", response_class=HTMLResponse)
 async def species_page(request: Request):
     return TEMPLATES.TemplateResponse(
+        request,
         "species.html",
         {
             "request": request,
@@ -644,6 +717,7 @@ async def workflow_page(request: Request):
     client_ip = _extract_client_ip(request)
     runs = manager.list_runs(owner_ip=client_ip)
     return TEMPLATES.TemplateResponse(
+        request,
         "workflow.html",
         {
             "request": request,
@@ -654,7 +728,7 @@ async def workflow_page(request: Request):
 
 @app.get("/help", response_class=HTMLResponse)
 async def help_page(request: Request):
-    return TEMPLATES.TemplateResponse("help.html", {"request": request})
+    return TEMPLATES.TemplateResponse(request, "help.html", {"request": request})
 
 
 @app.post("/run")
@@ -671,17 +745,53 @@ async def run_pipeline(
     job_name: str = Form(""),
     species_key: str = Form("auto"),
     adj_p_col: str = Form(""),
+    annotation_target: str = Form("outliers"),
 ):
     client_ip = _extract_client_ip(request)
+
+                                                                             
+    if not RUN_SUBMIT_LIMITER.allow(client_ip):
+        retry_after = int(RUN_SUBMIT_LIMITER.retry_after(client_ip)) + 1
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many runs submitted from this address. Please try again in about {retry_after}s.",
+        )
+
+                                                                        
+                                                                  
+                                                                              
+    declared_length = request.headers.get("content-length")
+    if declared_length:
+        try:
+            if int(declared_length) > MAX_UPLOAD_BYTES + (256 * 1024):
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Upload too large. Maximum file size is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.",
+                )
+        except ValueError:
+            pass
+
+                                                                             
+    original_name = sanitize_filename(data_file.filename or "upload.csv")
+    suffix = guess_extension(original_name)
+    if not suffix:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unsupported file type. Please upload a .csv, .tsv, .txt, .xlsx, or .xls file "
+                f"(got '{Path(original_name).suffix or 'no extension'}')."
+            ),
+        )
+
     client_api_key = hashlib.sha256(f"{client_ip}:{time.time_ns()}".encode("utf-8")).hexdigest()
     access_token = _build_access_token(client_ip)
-    job_name_clean = job_name.strip() or None
-    requested_species = (species_key or "auto").strip().lower() or "auto"
-    adj_col_clean = (adj_p_col or "").strip()
+    job_name_clean = sanitize_form_text(job_name, max_len=120) or None
+    requested_species = sanitize_form_text(species_key, max_len=64).lower() or "auto"
+    adj_col_clean = sanitize_form_text(adj_p_col, max_len=128)
     params = {
-        "gene_col": gene_col.strip(),
-        "log2fc_col": log2fc_col.strip(),
-        "pval_col": pval_col.strip(),
+        "gene_col": sanitize_form_text(gene_col, max_len=128),
+        "log2fc_col": sanitize_form_text(log2fc_col, max_len=128),
+        "pval_col": sanitize_form_text(pval_col, max_len=128),
         "adj_p_col": adj_col_clean or None,
         "log2fc_threshold": log2fc_threshold,
         "pvalue_threshold": pvalue_threshold,
@@ -692,30 +802,60 @@ async def run_pipeline(
         "species_detection": "pending",
         "client_ip": client_ip,
         "client_api_key": client_api_key,
+        "annotation_target": annotation_target,
     }
 
     info = manager.create(params, owner_ip=client_ip, access_token=access_token)
-
-    original_name = (data_file.filename or "upload.csv").strip()
-    suffix = Path(original_name).suffix.lower()
-    if suffix not in {".csv", ".tsv", ".txt", ".xlsx", ".xls"}:
-        suffix = ".csv"
     upload_target = info["run_dir"] / f"upload{suffix}"
+
+    def _fail(status_code: int, message: str):
+        manager._purge_run(info["id"], info)
+        raise HTTPException(status_code=status_code, detail=message)
+
+                                                                          
+                                                                          
+    try:
+        await stream_upload_to_disk(data_file, upload_target, max_bytes=MAX_UPLOAD_BYTES)
+    except FileValidationError as exc:
+        _fail(413, str(exc))
+    except Exception as exc:
+        _fail(400, f"Failed to save upload: {exc}")
+
+                                                                     
+                                                                       
+                                                                              
+    try:
+        validate_uploaded_file(upload_target, suffix)
+    except FileValidationError as exc:
+        _fail(400, str(exc))
+
+                                                                       
+                                                                
+    try:
+        threat = scan_with_clamav(upload_target)
+        if threat:
+            _fail(400, "Upload rejected: malware scanner flagged this file.")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
     info["input_path"] = upload_target
     info["input_filename"] = upload_target.name
     manager._save_meta(info)
 
-    with upload_target.open("wb") as buffer:
-        shutil.copyfileobj(data_file.file, buffer)
-
-    cleaned_rows, inferred_species = _prepare_expression(
-        upload_target,
-        info["expr_path"],
-        params["gene_col"],
-        params["log2fc_col"],
-        params["pval_col"],
-        params.get("adj_p_col"),
-    )
+    try:
+        cleaned_rows, inferred_species = _prepare_expression(
+            upload_target,
+            info["expr_path"],
+            params["gene_col"],
+            params["log2fc_col"],
+            params["pval_col"],
+            params.get("adj_p_col"),
+        )
+    except HTTPException as exc:
+        manager._purge_run(info["id"], info)
+        raise exc
 
     final_species_key = requested_species
     detection_label = "user-selected"
@@ -748,10 +888,12 @@ async def run_pipeline(
 
     manager.start(info["id"])
 
-    url = f"/runs/{info['id']}{_token_query(access_token)}"
+    url = _app_url(request, f"/runs/{info['id']}{_token_query(access_token)}")
     response = RedirectResponse(url=url, status_code=303)
-    response.set_cookie("last_run", info["id"])
-    response.set_cookie("last_run_token", access_token, httponly=True, samesite="lax")
+    response.set_cookie("last_run", info["id"], httponly=True, samesite="lax", secure=FORCE_HTTPS)
+    response.set_cookie(
+        "last_run_token", access_token, httponly=True, samesite="lax", secure=FORCE_HTTPS
+    )
     return response
 
 
@@ -764,6 +906,7 @@ async def view_run(request: Request, run_id: str, access_token: Optional[str] = 
     info["name"] = info.get("name") or (info.get("params", {}) or {}).get("job_name")
     token_for_view = access_token or info.get("access_token")
     return TEMPLATES.TemplateResponse(
+        request,
         "run.html",
         {
             "request": request,
@@ -781,11 +924,63 @@ async def run_status(request: Request, run_id: str, access_token: Optional[str] 
     if not info:
         raise HTTPException(status_code=404, detail="Run not found")
     _enforce_run_access(request, info, access_token)
+    
+    logs = []
+    if info["log_path"].exists():
+        try:
+            logs = info["log_path"].read_text(encoding="utf-8", errors="ignore").splitlines()
+        except Exception:
+            pass
+    
+    total_genes = 0
+    sig_up = 0
+    sig_down = 0
+    current_stage = ""
+    stage_index = 0
+    stage_count = 0
+    progress_ratio = 0.0
+
+    for line in logs:
+        if "Total genes in data :" in line:
+            try:
+                total_genes = int(line.split(":")[-1].strip())
+            except Exception:
+                pass
+        elif "no. of significant upregulated genes:" in line:
+            try:
+                sig_up = int(line.split(":")[-1].strip())
+            except Exception:
+                pass
+        elif "no. of significant downregulated genes:" in line:
+            try:
+                sig_down = int(line.split(":")[-1].strip())
+            except Exception:
+                pass
+        else:
+            m = re.search(r"\[STAGE (\d+)/(\d+)\]\s*(.+)", line)
+            if m:
+                current_stage = m.group(3).strip()
+                try:
+                    stage_index = int(m.group(1))
+                    stage_count = int(m.group(2))
+                    progress_ratio = stage_index / stage_count
+                except Exception:
+                    pass
+
     return {
         "id": run_id,
         "status": info["status"],
         "logs": manager.tail_logs(run_id),
         "summary": info.get("summary", {}),
+        "total_genes": total_genes,
+        "sig_up": sig_up,
+        "sig_down": sig_down,
+        "current_gene": current_stage,
+        "current_stage": current_stage,
+        "stage_index": stage_index,
+        "stage_count": stage_count,
+        "current_gene_status": "",
+        "progress_ratio": progress_ratio
     }
 
 
@@ -877,7 +1072,7 @@ async def view_results(request: Request, run_id: str, access_token: Optional[str
         info["summary"] = summary
         manager._save_meta(info)
 
-    # Compute runtime from created_at/updated_at if available
+                                                             
     run_duration = None
     try:
         started = info.get("created_at")
@@ -914,7 +1109,7 @@ async def view_results(request: Request, run_id: str, access_token: Optional[str
         "run_access_qs": _token_query(access_token or info.get("access_token")),
         "expires_at": info.get("expires_at"),
     }
-    return TEMPLATES.TemplateResponse("results.html", context)
+    return TEMPLATES.TemplateResponse(request, "results.html", context)
 
 
 @app.get("/runs/{run_id}/files/{file_path:path}")
@@ -1069,7 +1264,7 @@ async def view_downloads(request: Request, run_id: str, access_token: Optional[s
         "species_params": info.get("params", {}),
         "run_access_qs": _token_query(access_token or info.get("access_token")),
     }
-    return TEMPLATES.TemplateResponse("downloads.html", context)
+    return TEMPLATES.TemplateResponse(request, "downloads.html", context)
 
 
 @app.get("/runs/open")
@@ -1081,7 +1276,7 @@ async def open_run(request: Request, run_id: str, access_token: Optional[str] = 
     if info["status"] != "completed":
         raise HTTPException(status_code=404, detail="Run has not completed yet")
     token = access_token or info.get("access_token")
-    return RedirectResponse(url=f"/runs/{run_id}/results{_token_query(token)}", status_code=303)
+    return RedirectResponse(url=_app_url(request, f"/runs/{run_id}/results{_token_query(token)}"), status_code=303)
 
 
 def _safe_read_csv(path: Path):
@@ -1110,108 +1305,28 @@ def _clean_sequence(seq: str):
     return re.sub(r"[^A-Za-z]", "", seq or "").upper()
 
 
-def _phobius_submit(fasta_str: str):
-    resp = requests.post(
-        f"{PHOBIUS_BASE}/run",
-        data={"sequence": fasta_str, "email": PHOBIUS_EMAIL},
-        headers={"User-Agent": "tapipe-phobius-client"},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.text.strip()
-
-
-def _phobius_poll(job_id: str, timeout: Optional[float] = None, interval: Optional[float] = None):
-    wait_timeout = timeout or PHOBIUS_MAX_WAIT
-    poll_interval = interval or PHOBIUS_POLL_INTERVAL
-    status_url = f"{PHOBIUS_BASE}/status/{job_id}"
-    deadline = time.time() + wait_timeout
-    while time.time() < deadline:
-        r = requests.get(status_url, timeout=PHOBIUS_STATUS_TIMEOUT)
-        r.raise_for_status()
-        status = (r.text or "").strip().upper()
-        if status == "FINISHED":
-            return True
-        if status == "ERROR":
-            raise RuntimeError("Phobius job failed")
-        time.sleep(poll_interval)
-    raise TimeoutError("Phobius job timed out")
-
-
-def _phobius_fetch_artifact(url: str, binary: bool = True, optional: bool = False):
-    retries = max(PHOBIUS_RESULT_RETRIES, 1)
-    headers = {"User-Agent": "tapipe-phobius-client"}
-    for attempt in range(retries):
-        try:
-            resp = requests.get(url, headers=headers, timeout=PHOBIUS_RESULT_TIMEOUT)
-            if resp.status_code == 200 and resp.content:
-                return resp.content if binary else resp.text
-        except Exception:
-            pass
-        if attempt < retries - 1:
-            time.sleep(PHOBIUS_RESULT_DELAY)
-    if optional:
-        return None
-    raise TimeoutError(f"Phobius artifact not ready: {url}")
-
-
-def _phobius_download(job_id: str, gene_dir: Path, gene_id: str):
-    gene_dir.mkdir(parents=True, exist_ok=True)
-    txt_path = gene_dir / f"tmhmm_{gene_id}.txt"
-    png_path = gene_dir / f"tmhmm_{gene_id}.png"
-
-    text_url = f"{PHOBIUS_BASE}/result/{job_id}/out"
-    png_url = f"{PHOBIUS_BASE}/result/{job_id}/visual-png"
-    txt_content = _phobius_fetch_artifact(text_url, binary=True)
-    txt_path.write_bytes(txt_content)
-
-    png_content = _phobius_fetch_artifact(png_url, binary=True, optional=True)
-    if png_content:
-        png_path.write_bytes(png_content)
-    else:
-        png_path = None
-
-    try:
-        txt_content = txt_path.read_text(errors="ignore")
-    except Exception:
-        txt_content = ""
-    return txt_content, txt_path, png_path
-
-
-def _run_phobius(seq: str, gene_dir: Path, gene_id: str, force: bool = False):
-    gene_dir.mkdir(parents=True, exist_ok=True)
-    txt_path = gene_dir / f"tmhmm_{gene_id}.txt"
-    png_path = gene_dir / f"tmhmm_{gene_id}.png"
-
-    if not force and txt_path.exists() and png_path.exists():
-        try:
-            cached_text = txt_path.read_text(errors="ignore")
-        except Exception:
-            cached_text = ""
-        return {"text": cached_text, "text_path": txt_path, "png_path": png_path, "cached": True}
-
-    fasta_payload = f">{gene_id}\n{seq}\n"
-    job_id = _phobius_submit(fasta_payload)
-    _phobius_poll(job_id)
-    text, txt_path, png_path = _phobius_download(job_id, gene_dir, gene_id)
-    return {"text": text, "text_path": txt_path, "png_path": png_path, "job_id": job_id, "cached": False}
-
-
 def _clean_json(obj):
-    """Recursively replace NaN/Inf with None so json.dumps succeeds."""
     if isinstance(obj, dict):
         return {k: _clean_json(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [_clean_json(v) for v in obj]
+    if isinstance(obj, bool):
+        return obj
     if isinstance(obj, float):
         if np.isnan(obj) or np.isinf(obj):
             return None
         return float(obj)
     try:
-        if isinstance(obj, (np.floating,)):
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
             if np.isnan(obj) or np.isinf(obj):
                 return None
             return float(obj)
+        if isinstance(obj, np.ndarray):
+            return _clean_json(obj.tolist())
     except Exception:
         pass
     return obj
@@ -1246,7 +1361,7 @@ async def volcano_data(request: Request, run_id: str, access_token: Optional[str
     if not ann_df.empty and "gene_id" in ann_df.columns:
         ann_map = ann_df.set_index("gene_id").to_dict(orient="index")
 
-    # Preload pathway/domain/GO mappings for richer search index
+                                                                
     kegg_df = _safe_read_csv(output_dir / "kegg_pathways.csv")
     kegg_map = {}
     if not kegg_df.empty and "gene_id" in kegg_df.columns:
@@ -1459,6 +1574,20 @@ async def gene_detail(request: Request, run_id: str, gene_id: str, access_token:
         except Exception:
             psipred_conf = []
 
+    secondary_probabilities = []
+    raw_secondary_probabilities = row.get("secondary_probabilities") if isinstance(row, pd.Series) else None
+    if isinstance(raw_secondary_probabilities, str) and raw_secondary_probabilities:
+        try:
+            secondary_probabilities = json.loads(raw_secondary_probabilities)
+        except Exception:
+            secondary_probabilities = []
+    secondary_probabilities_path = gene_dir / f"secondary_{gene_id}.csv"
+    secondary_probabilities_url = (
+        f"/runs/{run_id}/files/genes/{'upregulated' if regulation == 'up' else 'downregulated'}/{gene_id}/{secondary_probabilities_path.name}"
+        if secondary_probabilities_path.exists()
+        else None
+    )
+
     tmhmm_segments = []
     tmhmm_topology = row.get("tmhmm_topology", "") if isinstance(row, pd.Series) else ""
     tmhmm_field = row.get("tmhmm_segments") if isinstance(row, pd.Series) else None
@@ -1467,6 +1596,13 @@ async def gene_detail(request: Request, run_id: str, gene_id: str, access_token:
             tmhmm_segments = json.loads(tmhmm_field)
         except Exception:
             tmhmm_segments = []
+    raw_uniprot_details = row.get("uniprot_details") if isinstance(row, pd.Series) else None
+    uniprot_details = {}
+    if isinstance(raw_uniprot_details, str) and raw_uniprot_details:
+        try:
+            uniprot_details = json.loads(raw_uniprot_details)
+        except Exception:
+            uniprot_details = {}
     tmhmm_png_path = gene_dir / f"tmhmm_{gene_id}.png"
     tmhmm_png_url = (
         f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/tmhmm_{gene_id}.png"
@@ -1474,6 +1610,9 @@ async def gene_detail(request: Request, run_id: str, gene_id: str, access_token:
         else None
     )
     tmhmm_txt_path = gene_dir / f"tmhmm_{gene_id}.txt"
+    tmhmm_summary_path = gene_dir / f"tmhmm_{gene_id}.summary"
+    tmhmm_annotation_path = gene_dir / f"tmhmm_{gene_id}.annotation"
+    tmhmm_posterior_path = gene_dir / f"tmhmm_{gene_id}.plot"
     tmhmm_txt_content = ""
     tmhmm_txt_url = None
     if tmhmm_txt_path.exists():
@@ -1529,6 +1668,7 @@ async def gene_detail(request: Request, run_id: str, gene_id: str, access_token:
         "regulation": regulation,
         "protein_name": row.get("protein_name", "Unknown"),
         "uniprot_id": row.get("uniprot_id"),
+        "uniprot_details": uniprot_details,
         "function": row.get("function", "Not available"),
         "go_bp": row.get("GO_biological_process", ""),
         "go_mf": row.get("GO_molecular_function", ""),
@@ -1536,11 +1676,19 @@ async def gene_detail(request: Request, run_id: str, gene_id: str, access_token:
         "interpro_domains": row.get("InterPro_domains", ""),
         "pfam_domains": row.get("Pfam_domains", ""),
         "cath_domains": row.get("CATH_domains", ""),
+        "panther": row.get("PANTHER", ""),
+        "keywords": row.get("keywords", ""),
+        "gene_name": row.get("gene_name", ""),
+        "organism": row.get("organism", ""),
+        "molecular_weight": row.get("molecular_weight", ""),
         "alphafold_confidence": row.get("alphafold_confidence", "N/A"),
         "alphafold_version": row.get("alphafold_version", "Unknown"),
         "secondary_structure": secondary_structure,
         "psipred_states": psipred_states,
         "psipred_confidence": psipred_conf,
+        "secondary_probabilities": secondary_probabilities,
+        "secondary_prediction_method": row.get("secondary_prediction_method", "GOR IV"),
+        "secondary_probabilities_url": secondary_probabilities_url,
         "fasta": fasta,
         "plain_sequence": plain_sequence,
         "pdb": pdb_text,
@@ -1559,6 +1707,9 @@ async def gene_detail(request: Request, run_id: str, gene_id: str, access_token:
         "tmhmm_is_transporter": tmhmm_flag,
         "tmhmm_text": tmhmm_txt_content,
         "tmhmm_text_url": tmhmm_txt_url,
+        "tmhmm_summary_url": f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/{tmhmm_summary_path.name}" if tmhmm_summary_path.exists() else None,
+        "tmhmm_annotation_url": f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/{tmhmm_annotation_path.name}" if tmhmm_annotation_path.exists() else None,
+        "tmhmm_posterior_url": f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/{tmhmm_posterior_path.name}" if tmhmm_posterior_path.exists() else None,
         "gor4_state_img": gor4_state_url,
         "gor4_profile_img": gor4_profile_url,
         "gor4_text_url": gor4_text_url,
@@ -1568,65 +1719,6 @@ async def gene_detail(request: Request, run_id: str, gene_id: str, access_token:
         "fasta_path": f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/protein_{gene_id}.fasta" if fasta_path.exists() else None,
     }
     return _clean_json(detail)
-
-
-@app.post("/runs/{run_id}/gene/{gene_id}/phobius", response_class=JSONResponse)
-async def gene_phobius(request: Request, run_id: str, gene_id: str, force: bool = False, access_token: Optional[str] = None):
-    info = manager.get(run_id)
-    if not info:
-        raise HTTPException(status_code=404, detail="Run not found")
-    _enforce_run_access(request, info, access_token)
-    if info["status"] != "completed":
-        raise HTTPException(status_code=400, detail="Run not completed")
-
-    output_dir = info["output_dir"]
-    ann_df = _safe_read_csv(output_dir / "annotations.csv")
-    if ann_df.empty or "gene_id" not in ann_df.columns:
-        raise HTTPException(status_code=404, detail="No annotation data")
-
-    row = ann_df.loc[ann_df["gene_id"] == gene_id]
-    if row.empty:
-        raise HTTPException(status_code=404, detail="Gene not found")
-    row = row.iloc[0]
-
-    log2fc = row.get("log2FC", 0)
-    regulation = "up" if pd.notna(log2fc) and log2fc > 0 else "down"
-    gene_dir = output_dir / "genes" / ("upregulated" if regulation == "up" else "downregulated") / gene_id
-
-    fasta_path = gene_dir / f"protein_{gene_id}.fasta"
-    if not fasta_path.exists():
-        raise HTTPException(status_code=404, detail="FASTA not found for gene")
-    try:
-        fasta_text = fasta_path.read_text()
-    except Exception:
-        raise HTTPException(status_code=500, detail="Failed to read FASTA")
-
-    seq = _clean_sequence(fasta_text)
-    if not seq or len(seq) < 20:
-        raise HTTPException(status_code=400, detail="Sequence too short or invalid for Phobius")
-
-    try:
-        result = _run_phobius(seq, gene_dir, gene_id, force=force)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Phobius call failed: {exc}")
-
-    txt_path = result.get("text_path")
-    png_path = result.get("png_path")
-    txt_url = None
-    png_url = None
-    if txt_path and txt_path.exists():
-        txt_url = f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/{txt_path.name}"
-    if png_path and png_path.exists():
-        png_url = f"/runs/{run_id}/files/genes/{'upregulated' if regulation=='up' else 'downregulated'}/{gene_id}/{png_path.name}"
-
-    return {
-        "status": "ok",
-        "cached": result.get("cached", False),
-        "job_id": result.get("job_id"),
-        "text": result.get("text", ""),
-        "text_url": txt_url,
-        "png_url": png_url,
-    }
 
 
 @app.post("/runs/{run_id}/gene/{gene_id}/fold", response_class=JSONResponse)
@@ -1660,6 +1752,142 @@ async def gene_fold(request: Request, run_id: str, gene_id: str, access_token: O
         raise HTTPException(status_code=502, detail="ESMFold (ESM Atlas) prediction failed or timed out")
 
     return {"status": "ok", "pdb_url": f"/runs/{run_id}/files/genes/{'upregulated' if 'upregulated' in str(out_path) else 'downregulated'}/{gene_id}/fold_rapid_{gene_id}.pdb"}
+
+
+MAX_CHAT_PAYLOAD_BYTES = 64 * 1024
+
+
+def _chat_access_token(request: Request, payload: dict) -> Optional[str]:
+    token = payload.get("access_token") if isinstance(payload, dict) else None
+    if token:
+        return str(token)
+    return request.query_params.get("access_token")
+
+
+@app.post("/runs/{run_id}/chat/stream")
+async def chat_stream(request: Request, run_id: str):
+    info = manager.get(run_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    declared_length = request.headers.get("content-length")
+    if declared_length:
+        try:
+            if int(declared_length) > MAX_CHAT_PAYLOAD_BYTES:
+                raise HTTPException(status_code=413, detail="Chat message payload is too large.")
+        except ValueError:
+            pass
+
+    raw_body = await request.body()
+    if len(raw_body) > MAX_CHAT_PAYLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Chat message payload is too large.")
+
+    try:
+        payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+
+    access_token = _chat_access_token(request, payload)
+    _enforce_run_access(request, info, access_token)
+
+    if info["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Run has not completed yet")
+
+    client_ip = _extract_client_ip(request)
+    limiter_key = f"{client_ip}:{run_id}"
+    if not CHAT_BURST_LIMITER.allow(limiter_key):
+        retry_after = int(CHAT_BURST_LIMITER.retry_after(limiter_key)) + 1
+        raise HTTPException(
+            status_code=429,
+            detail=f"You're sending messages too quickly. Please wait about {retry_after}s.",
+        )
+    if not CHAT_MESSAGE_LIMITER.allow(limiter_key):
+        retry_after = int(CHAT_MESSAGE_LIMITER.retry_after(limiter_key)) + 1
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many chat messages for this run. Please try again in about {retry_after}s.",
+        )
+
+    try:
+        question = chat_service.sanitize_question(payload.get("question"))
+    except chat_service.ChatInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    conversation_history = chat_service.sanitize_history(payload.get("history"))
+
+    species_params = info.get("params", {}) or {}
+    log2fc_threshold = chat_service.clamp_threshold(
+        payload.get("log2fc_threshold"),
+        default=float(species_params.get("log2fc_threshold", 1.0) or 1.0),
+        low=0.0,
+        high=20.0,
+    )
+    pval_threshold = chat_service.clamp_threshold(
+        payload.get("pval_threshold"),
+        default=float(species_params.get("pvalue_threshold", 0.05) or 0.05),
+        low=0.0,
+        high=1.0,
+    )
+
+    output_dir = info["output_dir"]
+    run_dir = info["run_dir"]
+
+    async def is_disconnected() -> bool:
+        try:
+            return await request.is_disconnected()
+        except Exception:
+            return False
+
+    async def event_stream():
+        try:
+            async for event in chat_service.stream_chat_answer(
+                output_dir,
+                run_dir,
+                species_params,
+                question,
+                conversation_history,
+                log2fc_threshold,
+                pval_threshold,
+                is_disconnected,
+            ):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception:
+            fallback = {
+                "event": "done",
+                "answer": "Sorry, something went wrong while generating a response. Please try again.",
+                "citations": [],
+                "genes_annotated": [],
+            }
+            yield f"data: {json.dumps(fallback)}\n\n"
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
+
+
+@app.get("/runs/{run_id}/chat/history", response_class=JSONResponse)
+async def chat_history(request: Request, run_id: str, access_token: Optional[str] = None):
+    info = manager.get(run_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Run not found")
+    _enforce_run_access(request, info, access_token)
+    history = chat_service.load_chat_history(info["run_dir"])
+    return {"messages": history}
+
+
+@app.post("/runs/{run_id}/chat/clear", response_class=JSONResponse)
+async def chat_clear(request: Request, run_id: str, access_token: Optional[str] = None):
+    info = manager.get(run_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Run not found")
+    _enforce_run_access(request, info, access_token)
+    chat_service.clear_chat_history(info["run_dir"])
+    return {"status": "cleared"}
 
 
 @app.get("/health")

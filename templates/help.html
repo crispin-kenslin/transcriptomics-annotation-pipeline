@@ -5,137 +5,113 @@
 
 <section class="help-page">
 
-<div class="card-header">
-<div>
-<p class="eyebrow">Support</p>
-<h1>Help</h1>
-</div>
-</div>
+    <div class="card-header">
+        <div>
+            <p class="eyebrow">Support</p>
+            <h1>Help</h1>
+        </div>
+    </div>
 
 
-<div class="help-layout">
+    <div class="help-layout">
 
 
-<!-- LEFT NAVIGATION -->
+        <!-- LEFT NAVIGATION -->
 
-<aside class="help-nav">
+        <aside class="help-nav">
 
-<h3 class="nav-title">Help navigation</h3>
+            <h3 class="nav-title">Help navigation</h3>
 
-<ul>
-<li><a href="#input-format">Input</a></li>
-<li><a href="#analysis">Analysis</a></li>
-</ul>
+            <ul>
+                <li><a href="#input-format">Input</a></li>
+                <li><a href="#analysis">Analysis</a></li>
+            </ul>
 
-</aside>
-
-
-
-<div class="help-body">
-
-<div class="accordion">
-
-
-<!-- INPUT SECTION -->
-
-<details id="input-format" open>
-
-<summary>Input</summary>
-
-<div class="help-section">
-
-<p class="hint">
-Upload a CSV file containing at least three columns:
-<strong>gene_id</strong>, <strong>log2FC</strong>, and <strong>p_value</strong>.
-Map these columns in the Run page before launching.
-</p>
-
-
-<div class="media-stack">
-
-<div class="media-box">
-
-<figure>
-
-<img src="/static/images/input-format.png"
-alt="Example expression table"
-loading="lazy">
-
-<figcaption>
-Example expression table format.
-</figcaption>
-
-</figure>
-
-</div>
+        </aside>
 
 
 
-<div class="media-box video">
+        <div class="help-body">
 
-<div class="video-frame">
-
-<iframe width="100%" height="400"
-src="https://www.youtube.com/embed/U_TCBkSLFGU"
-title="Input tutorial"
-frameborder="0"
-allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-allowfullscreen>
-</iframe>
-
-</div>
-
-</div>
+            <div class="accordion">
 
 
-</div>
+                <!-- INPUT SECTION -->
 
-</div>
+                <details id="input-format" open>
 
-</details>
+                    <summary>Input</summary>
 
+                    <div class="help-section">
 
-
-<!-- ANALYSIS SECTION -->
-
-<details id="analysis">
-
-<summary>Analysis</summary>
-
-<div class="help-section">
-
-<p class="hint">
-This tutorial explains how to interpret TAP results including
-functional annotation, domains, pathways, and interaction networks.
-</p>
+                        <p class="hint">
+                            Upload a CSV file containing at least three columns:
+                            <strong>gene_id</strong>, <strong>log2FC</strong>, and <strong>p_value</strong>.
+                            Map these columns in the Run page before launching.
+                        </p>
 
 
-<div class="media-box video">
+                        <div class="media-box video">
 
-<div class="video-frame">
+                            <div class="video-frame">
 
-<iframe width="100%" height="400"
-src="https://www.youtube.com/embed/e4G8CZT9KPw"
-title="Analysis tutorial"
-frameborder="0"
-allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-allowfullscreen>
-</iframe>
+                                <iframe width="100%" height="400" src="https://www.youtube.com/embed/U_TCBkSLFGU"
+                                    title="Input tutorial" frameborder="0"
+                                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                    allowfullscreen>
+                                </iframe>
 
-</div>
+                            </div>
 
-</div>
-
-</div>
-
-</details>
+                        </div>
 
 
-</div>
+                    </div>
 
-</div>
+            </div>
 
-</div>
+            </details>
+
+
+
+            <!-- ANALYSIS SECTION -->
+
+            <details id="analysis">
+
+                <summary>Analysis</summary>
+
+                <div class="help-section">
+
+                    <p class="hint">
+                        This tutorial explains how to interpret TAP results including
+                        functional annotation, domains, pathways, and interaction networks.
+                    </p>
+
+
+                    <div class="media-box video">
+
+                        <div class="video-frame">
+
+                            <iframe width="100%" height="400" src="https://www.youtube.com/embed/e4G8CZT9KPw"
+                                title="Analysis tutorial" frameborder="0"
+                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                allowfullscreen>
+                            </iframe>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </details>
+
+
+        </div>
+
+    </div>
+
+    </div>
 
 </section>
 
@@ -143,66 +119,66 @@ allowfullscreen>
 
 <script>
 
-const navLinks = Array.from(document.querySelectorAll('.help-nav a'));
+    const navLinks = Array.from(document.querySelectorAll('.help-nav a'));
 
-const sections = navLinks
-.map(link => document.querySelector(link.getAttribute('href')))
-.filter(Boolean);
-
-
-sections.forEach(section => { section.open = true; });
+    const sections = navLinks
+        .map(link => document.querySelector(link.getAttribute('href')))
+        .filter(Boolean);
 
 
-const setActive = (id) => {
-navLinks.forEach(link => {
-link.classList.toggle('is-active', link.getAttribute('href') === `#${id}`);
-});
-};
+    sections.forEach(section => { section.open = true; });
 
 
-navLinks.forEach(link => {
-link.addEventListener('click', evt => {
-
-evt.preventDefault();
-
-const targetId = link.getAttribute('href');
-
-const panel = document.querySelector(targetId);
-
-if (!panel) return;
-
-panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-
-setActive(panel.id);
-
-});
-});
+    const setActive = (id) => {
+        navLinks.forEach(link => {
+            link.classList.toggle('is-active', link.getAttribute('href') === `#${id}`);
+        });
+    };
 
 
-if (sections.length) {
+    navLinks.forEach(link => {
+        link.addEventListener('click', evt => {
 
-const observer = new IntersectionObserver(entries => {
+            evt.preventDefault();
 
-entries.forEach(entry => {
+            const targetId = link.getAttribute('href');
 
-if (entry.isIntersecting) {
-setActive(entry.target.id);
-}
+            const panel = document.querySelector(targetId);
 
-});
+            if (!panel) return;
 
-}, {
-root: null,
-rootMargin: '-40% 0px -50% 0px',
-threshold: 0.1
-});
+            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+            setActive(panel.id);
+
+        });
+    });
 
 
-sections.forEach(section => observer.observe(section));
+    if (sections.length) {
 
-setActive(sections[0].id);
+        const observer = new IntersectionObserver(entries => {
 
-}
+            entries.forEach(entry => {
+
+                if (entry.isIntersecting) {
+                    setActive(entry.target.id);
+                }
+
+            });
+
+        }, {
+            root: null,
+            rootMargin: '-40% 0px -50% 0px',
+            threshold: 0.1
+        });
+
+
+        sections.forEach(section => observer.observe(section));
+
+        setActive(sections[0].id);
+
+    }
 
 </script>
 
